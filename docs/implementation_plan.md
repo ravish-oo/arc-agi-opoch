@@ -17,21 +17,21 @@ Each item: file, ceiling, contract, tests, reviewer gates.
 
 ## Work Order Briefs/Milestones
 
-**MK-00 Stable**
+**MK-00 Stable** ✅ COMPLETE
 
 * Files: `stable.py`
 * Contract: `stable_hash64(obj)`, canonical JSON dump; `sorted_items`; `row_major_string(Grid)`
 * Tests: hash determinism; dict order invariance
 * Gates: no RNG; no `hash()`; no datetime
 
-**MK-01 Grid**
+**MK-01 Grid** ✅ COMPLETE
 
 * Files: `grid.py`
 * Contract: `Grid` immutable view + safe setter, `H,W`, `positions`, bounds asserts, 0..9 palette guard
 * Tests: round-trip set/get; bounds; palette
 * Gates: shape 1..30
 
-**MK-02 Equivalences**
+**MK-02 Equivalences** ✅ COMPLETE
 
 * Files: `equiv.py`
 * Contract: disjoint-set or labeler for equivalence relations; export as partition; `is_refinement(P,Q)`
