@@ -91,6 +91,18 @@ class Grid:
             raise IndexError(f"Row index {r} out of bounds [0, {self._H})")
         return GridRow(self, r)
 
+    def __len__(self) -> int:
+        """
+        Length of grid (number of rows).
+
+        Returns:
+            Height (same as H property)
+
+        Note:
+            Enables duck-typing with row_major_string(grid)
+        """
+        return self._H
+
     def positions(self) -> Iterator[tuple[int, int]]:
         """
         Iterate over all positions in row-major order.
