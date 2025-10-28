@@ -38,7 +38,7 @@ Each item: file, ceiling, contract, tests, reviewer gates.
 * Tests: refinement positives and negatives; stability
 * Gates: no numeric row/col in public API
 
-**MK-03 Present**
+**MK-03 Present** ✅ COMPLETE
 
 * Files: `present.py`
 * Contract: `build_present(X, opts)`
