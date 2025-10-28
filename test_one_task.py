@@ -27,17 +27,20 @@ print(f"Training: {len(trains)} pairs")
 for i, (X, Y) in enumerate(trains):
     print(f"  Train {i}: {X.H}×{X.W} → {Y.H}×{Y.W}")
 
-# Compile
+# Test inputs (needed for union-WL)
+test_inputs = [Grid(p['input']) for p in task['test']]
+
+# Compile (per math_spec: WL runs on train∪test)
 print("\nCompiling...")
-result, witness = compile_CPRQ(trains, {})
+result, witness = compile_CPRQ(trains, test_inputs, {})
 
 if result is None:
     print(f"❌ COMPILATION FAILED")
     print(f"   Witness: {witness}")
     exit(1)
 
-# Unpack
-Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode = result
+# Unpack (11 elements now)
+Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode, Psi_list_test = result
 
 print(f"✅ COMPILATION SUCCEEDED")
 print(f"   Label mode: {label_mode}")
@@ -48,7 +51,6 @@ print(f"   Roles: {len(set(c for psi in Psi_list for c in psi.values()))}")
 print(f"   ρ size: {len(rho)}")
 
 # Test
-test_inputs = [Grid(p['input']) for p in task['test']]
 print(f"\nTesting: {len(test_inputs)} case(s)")
 
 for test_idx, test_input in enumerate(test_inputs):
@@ -57,9 +59,9 @@ for test_idx, test_input in enumerate(test_inputs):
     gt_grid = Grid(ground_truth[test_idx])
     print(f"  Expected: {gt_grid.H}×{gt_grid.W}")
 
-    # Predict
+    # Predict (using pre-computed Psi)
     try:
-        predicted = predict(test_input, trains, result)
+        predicted = predict(test_input, trains, result, test_idx)
         print(f"  Predicted: {predicted.H}×{predicted.W}")
 
         # Compare

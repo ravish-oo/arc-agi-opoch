@@ -60,9 +60,12 @@ with open(OUTPUT_FILE, 'w') as f:
         trains = [(Grid(p['input']), Grid(p['output'])) for p in task['train']]
         write_and_print(f, f'Training: {len(trains)} pairs')
 
-        # Compile
+        # Test inputs (needed for union-WL)
+        test_inputs = [Grid(p['input']) for p in task['test']]
+
+        # Compile (per math_spec: WL runs on train∪test)
         try:
-            result, witness = compile_CPRQ(trains, {})
+            result, witness = compile_CPRQ(trains, test_inputs, {})
         except Exception as e:
             write_and_print(f, f'❌ COMPILATION CRASHED: {type(e).__name__}: {e}')
             task_results[task_id] = {
@@ -84,23 +87,21 @@ with open(OUTPUT_FILE, 'w') as f:
             }
             continue
 
-        # Unpack compilation result
-        Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode = result
+        # Unpack compilation result (11 elements now)
+        Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode, Psi_list_test = result
         num_roles = len(set(c for psi in Psi_list for c in psi.values()))
 
         write_and_print(f, f'✅ Compiled: π={pi_tag}, depth={wl_depth}, iter={wl_iter_count}, mode={label_mode}, roles={num_roles}, ρ_size={len(rho)}')
 
-        # Test inputs
-        test_inputs = [Grid(p['input']) for p in task['test']]
         write_and_print(f, f'Testing: {len(test_inputs)} case(s)')
 
         all_perfect = True
         predict_witness = None
 
         for test_idx, test_input in enumerate(test_inputs):
-            # Predict
+            # Predict (using pre-computed Psi)
             try:
-                predicted_grid = predict(test_input, trains, result)
+                predicted_grid = predict(test_input, trains, result, test_idx)
             except ValueError as e:
                 # Per math_spec.md: present_gap_unseen_class witness
                 error_msg = str(e)

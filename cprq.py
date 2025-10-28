@@ -31,8 +31,9 @@ from stable import stable_hash64
 Position = Tuple[int, int]
 Partition = Dict[Position, int]
 Witness = Dict[str, Any]
-# CompileResult: (Psi_list, rho, wl_depth, opts, domain_mode, scale_factor_or_band_map, pi_tag, phases, wl_iter_count, label_mode)
-CompileResult = Tuple[List[Partition], Dict[int, int], int, Dict[str, bool], str, Optional[Any], str, Tuple[Optional[int], Optional[int], Optional[int]], int, str]
+# CompileResult: (Psi_list_train, rho, wl_depth, opts, domain_mode, scale_factor_or_band_map, pi_tag, phases, wl_iter_count, label_mode, Psi_list_test)
+# Per math_spec: WL runs on train∪test, so test Psi are pre-computed
+CompileResult = Tuple[List[Partition], Dict[int, int], int, Dict[str, bool], str, Optional[Any], str, Tuple[Optional[int], Optional[int], Optional[int]], int, str, List[Partition]]
 BandMap = Tuple[Dict[int, int], Dict[int, int]]  # (row_map, col_map)
 
 
@@ -52,6 +53,7 @@ def _escalation_ladder() -> List[Tuple[int, Dict[str, bool]]]:
 
 def _try_orbit_compile(
     trains: List[Tuple[Grid, Grid]],
+    test_inputs: List[Grid],
     domain_mode: str,
     scale_or_none: Optional[int],
     pi_tag: str,
@@ -78,13 +80,13 @@ def _try_orbit_compile(
 
     # Try escalation ladder with orbit kernel
     for wl_depth, opts in _escalation_ladder():
-        # Compute K_𝒢 with current escalation
-        KG_partitions, wl_iter_count = compute_KG_trains(trains, opts, wl_depth, phases)
+        # Compute K_𝒢 with current escalation (per math_spec: on train∪test)
+        KG_partitions_train, KG_partitions_test, wl_iter_count = compute_KG_trains(trains, test_inputs, opts, wl_depth, phases)
 
         # Check if K_𝒢 refines L_orbit
         all_refine = True
         for train_idx in range(len(trains)):
-            if not is_refinement(KG_partitions[train_idx], L_orbit[train_idx]):
+            if not is_refinement(KG_partitions_train[train_idx], L_orbit[train_idx]):
                 all_refine = False
                 break
 
@@ -92,11 +94,14 @@ def _try_orbit_compile(
             # This escalation level doesn't refine L_orbit - try next
             continue
 
-        # K_𝒢 refines L_orbit! Compute E_tilde
+        # K_𝒢 refines L_orbit! Compute E_tilde for training
         E_tilde_list = []
         for i in range(len(trains)):
-            E_tilde = meet_partitions(KG_partitions[i], L_orbit[i])
+            E_tilde = meet_partitions(KG_partitions_train[i], L_orbit[i])
             E_tilde_list.append(E_tilde)
+
+        # Compute E_tilde for test (no label kernel for test, just use K_𝒢)
+        E_tilde_test = KG_partitions_test
 
         # Build abstract ρ̃ (ALWAYS exists in orbit mode)
         try:
@@ -136,7 +141,7 @@ def _try_orbit_compile(
 
         # Success! Return with label_mode="orbit"
         # Note: abstract_rho will be canonicalized at predict time
-        return ((E_tilde_list, abstract_rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "orbit"), None)
+        return ((E_tilde_list, abstract_rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "orbit", E_tilde_test), None)
 
     # All escalations failed - even orbit can't express this
     witness = {
@@ -197,27 +202,30 @@ def meet_partitions(p1: Partition, p2: Partition) -> Partition:
 
 def compute_KG_trains(
     trains: List[Tuple[Grid, Grid]],
+    test_inputs: List[Grid],
     opts: Dict[str, bool],
     wl_depth: int,
     phases: Tuple[Optional[int], Optional[int], Optional[int]]
-) -> Tuple[List[Partition], int]:
+) -> Tuple[List[Partition], List[Partition], int]:
     """
-    Compute K_𝒢 (present congruence) on training inputs only.
+    Compute K_𝒢 (present congruence) on train∪test inputs.
 
+    Per math_spec_addon_airtight.md line 40: "WL runs on train∪test"
     Per WO-MK-05.4: "K_𝒢(X): present congruence of X under free moves 𝒢
     (coarsest input-only WL fixed point)."
 
     This is the "input structure quotient" - positions with same role
-    across all training inputs get same class.
+    across all inputs get same class.
 
     Args:
         trains: Training pairs (already canonicalized)
+        test_inputs: Test inputs (already canonicalized)
         opts: Present options (E8, CBC1, etc.)
         wl_depth: WL depth (1 or 2)
         phases: Phase parameters
 
     Returns:
-        (List of partitions, one per train input, WL iteration count)
+        (Train partitions, Test partitions, WL iteration count)
 
     Examples:
         >>> # Two grids with identical structure
@@ -225,19 +233,25 @@ def compute_KG_trains(
         >>> x2 = Grid([[5, 6], [7, 8]])
         >>> y1 = Grid([[0, 0], [0, 0]])
         >>> y2 = Grid([[0, 0], [0, 0]])
-        >>> KG, _ = compute_KG_trains([(x1, y1), (x2, y2)], {}, 1, (None, None, None))
+        >>> KG_train, KG_test, _ = compute_KG_trains([(x1, y1), (x2, y2)], [], {}, 1, (None, None, None))
         >>> # Same structure → aligned classes
-        >>> len(KG) == 2
+        >>> len(KG_train) == 2
         True
     """
-    # Build presents for training inputs
+    # Build presents for train∪test inputs (per math_spec)
     X_list = [X for X, Y in trains]
-    presents = [build_present(X, opts, phases) for X in X_list]
+    all_inputs = X_list + test_inputs
+    presents = [build_present(X, opts, phases) for X in all_inputs]
 
-    # Run WL on disjoint union to get K_𝒢
-    KG_partitions, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
+    # Run WL ONCE on train∪test (per math_spec_addon_airtight.md)
+    KG_partitions_all, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
 
-    return KG_partitions, wl_iter_count
+    # Split back into train and test
+    num_trains = len(trains)
+    KG_partitions_train = KG_partitions_all[:num_trains]
+    KG_partitions_test = KG_partitions_all[num_trains:]
+
+    return KG_partitions_train, KG_partitions_test, wl_iter_count
 
 
 def compute_LabelMeet(trains: List[Tuple[Grid, Grid]]) -> List[Partition]:
@@ -466,19 +480,28 @@ def _unify_band_structure(trains: List[Tuple[Grid, Grid]]) -> Optional[Tuple[Par
 
 def compile_CPRQ(
     trains: List[Tuple[Grid, Grid]],
+    test_inputs: List[Grid],
     base_opts: Dict[str, bool]
 ) -> Tuple[Optional[CompileResult], Optional[Witness]]:
     """
     Compile CPRQ: find coarsest present-respecting partition that respects labels.
 
+    Per math_spec.md line 13: "Given training pairs {(X_i,Y_i)}, test inputs {X^*}"
+    Per math_spec_addon_airtight.md line 40: "WL runs on the same present on train∪test"
+
+    WL is computed ONCE on train∪test inputs during compilation.
+    ρ is built from training positions only.
+    Test Psi (pre-computed roles) are returned in CompileResult.
+
     Escalation ladder: base → {E8 OR CBC1 OR CBC2} (single step only)
 
     Args:
         trains: List of (input_grid, output_grid) pairs
+        test_inputs: List of test input grids (for union-WL)
         base_opts: Base options (should be empty {} for always-on relations only)
 
     Returns:
-        Success: ((Psi_list, rho, options_used), None)
+        Success: ((Psi_list_train, rho, ..., Psi_list_test), None)
         Failure: (None, witness)
 
     Examples:
@@ -511,8 +534,12 @@ def compile_CPRQ(
         Yc = apply_transform(Y, pi_tag)
         trains_canonical.append((Xc, Yc))
 
+    # Canonicalize test inputs with same transformation
+    test_inputs_canonical = [apply_transform(X_test, pi_tag) for X_test in test_inputs]
+
     # From now on, work with canonical grids
     trains = trains_canonical
+    test_inputs = test_inputs_canonical
 
     # Detect phases: check if all training inputs have consistent periods
     # Per math_spec.md: "included only if consistent across all training inputs"
@@ -561,7 +588,7 @@ def compile_CPRQ(
 
     # Step 1: Try strict CPRQ (exact label matching)
     for wl_depth, opts in _escalation_ladder():
-        result, witness = _try_compile(trains, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases)
+        result, witness = _try_compile(trains, test_inputs, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases)
         if result is not None:
             # Strict CPRQ succeeded!
             return (result, None)
@@ -572,7 +599,7 @@ def compile_CPRQ(
     if witness and witness.get('type') in ['label_conflict_unexpressible', 'refinement_failure']:
         # Try orbit path: use ker_H (label orbit kernel) instead of ker(c_i)
         result_orbit, witness_orbit = _try_orbit_compile(
-            trains, domain_mode, scale_or_none, pi_tag, phases
+            trains, test_inputs, domain_mode, scale_or_none, pi_tag, phases
         )
         if result_orbit is not None:
             # Orbit CPRQ succeeded!
@@ -586,6 +613,7 @@ def compile_CPRQ(
 
 def _try_compile(
     trains: List[Tuple[Grid, Grid]],
+    test_inputs: List[Grid],
     wl_depth: int,
     opts: Dict[str, bool],
     domain_mode: str,
@@ -596,16 +624,26 @@ def _try_compile(
     """
     Try compilation with given WL depth and options.
 
+    Per math_spec: WL runs on train∪test inputs ONCE.
+    Ρ is built from training positions only.
+    Test Psi are pre-computed and returned.
+
     Returns:
-        Success: ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases), None)
+        Success: ((Psi_list_train, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode, Psi_list_test), None)
         Failure: (None, witness)
     """
-    # Build present for each training input
+    # Build present for train∪test inputs (per math_spec)
     X_list = [X for X, Y in trains]
-    presents = [build_present(X, opts, phases) for X in X_list]
+    all_inputs = X_list + test_inputs
+    presents = [build_present(X, opts, phases) for X in all_inputs]
 
-    # Run WL to get Psi partitions
-    Psi_list, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
+    # Run WL ONCE on train∪test (per math_spec_addon_airtight.md line 40)
+    Psi_list_all, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
+
+    # Split back into train and test
+    num_trains = len(trains)
+    Psi_list = Psi_list_all[:num_trains]  # Training Psi
+    Psi_list_test = Psi_list_all[num_trains:]  # Test Psi (pre-computed)
 
     # Check label-constant property (refinement)
     for train_idx, (X, Y) in enumerate(trains):
@@ -651,11 +689,12 @@ def _try_compile(
             return (None, witness)
 
     # Success!
-    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "strict"), None)
+    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "strict", Psi_list_test), None)
 
 
 def _try_compile_shape_change(
     trains: List[Tuple[Grid, Grid]],
+    test_inputs: List[Grid],
     wl_depth: int,
     opts: Dict[str, bool],
     target_row_bands: Partition,
@@ -682,8 +721,11 @@ def _try_compile_shape_change(
     mapping X through bands to target space, but for now we work directly
     with Y to make progress.
 
+    For shape-change tasks, test inputs need special handling (mapping to target space).
+    For now, we return empty Psi_list_test as shape-change is not yet fully implemented.
+
     Returns:
-        Success: ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases), None)
+        Success: ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode, Psi_list_test), None)
         Failure: (None, witness)
     """
     # Build present for each OUTPUT (Y) grid
@@ -693,7 +735,10 @@ def _try_compile_shape_change(
     presents = [build_present(Y, opts, phases) for Y in Y_list]
 
     # Run WL to get Psi partitions (on Y positions)
+    # For shape-change, test inputs need to be mapped to target space first
+    # For now, we only run WL on training outputs
     Psi_list, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
+    Psi_list_test = []  # TODO: Map test inputs to target space and compute Psi
 
     # Check label-constant property (refinement on Y space)
     for train_idx, (X, Y) in enumerate(trains):
@@ -739,7 +784,7 @@ def _try_compile_shape_change(
             return (None, witness)
 
     # Success!
-    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "strict"), None)
+    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "strict", Psi_list_test), None)
 
 
 def _build_label_partition(Y: Grid) -> Partition:
@@ -1235,18 +1280,18 @@ def count_cells_wrong(Y: Grid, Y_pred: Grid) -> int:
     return wrong
 
 
-def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: CompileResult) -> Grid:
+def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: CompileResult, test_idx: int = 0) -> Grid:
     """
     Predict output for test input using compiled CPRQ model.
 
-    Per WO-MK-05.2, runs WL on disjoint union {trains ∪ test} to ensure
-    alignment. Rebuilds ρ from training positions in the union (WL hashes
-    change when test is added, so we rebuild ρ with new hashes).
+    Per math_spec_addon_airtight.md: WL runs ONCE on train∪test during compilation.
+    Predict simply applies pre-computed ρ to pre-computed test Psi.
 
     Args:
-        X_test: Test input grid
-        trains: Original training data (for union-WL alignment)
-        compile_result: Result from compile_CPRQ (options_used only)
+        X_test: Test input grid (for transformation and shape info only)
+        trains: Original training data (for orbit canonicalization)
+        compile_result: Result from compile_CPRQ (includes pre-computed test Psi)
+        test_idx: Index of test input (default 0 for single test case)
 
     Returns:
         Predicted output grid
@@ -1256,115 +1301,44 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         >>> x1 = Grid([[1, 2]])
         >>> y1 = Grid([[5, 6]])
         >>> trains = [(x1, y1)]
-        >>> result, witness = compile_CPRQ(trains, {})
+        >>> result, witness = compile_CPRQ(trains, [Grid([[1, 2]])], {})
         >>> x_test = Grid([[1, 2]])
-        >>> y_pred = predict(x_test, trains, result)
+        >>> y_pred = predict(x_test, trains, result, 0)
         >>> y_pred[0][0] == 5 and y_pred[0][1] == 6
         True
     """
-    Psi_list_train_old, rho_old, wl_depth, options_used, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count_compile, label_mode = compile_result
+    # Unpack compile result (11 elements now)
+    Psi_list_train, rho, wl_depth, options_used, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count_compile, label_mode, Psi_list_test = compile_result
 
     # Π canonicalization: apply same transform to test input
     # Per math_spec.md: "on test, apply to X*, remember inverse"
     pi_inv = get_inverse_transform(pi_tag)
     X_test_canonical = apply_transform(X_test, pi_tag)
 
-    # Build presents on appropriate domain based on domain_mode
-    # CRITICAL: Must use union-WL for alignment
-    # Note: trains are already canonicalized in compile_CPRQ
-    # Track which grid Psi_test will be built from (for correct predict dimensions)
-    test_grid_for_wl = X_test_canonical  # Default
+    # Extract pre-computed Psi for test input (from compile_result)
+    # Per math_spec: WL ran ONCE on train∪test during compilation
+    if test_idx >= len(Psi_list_test):
+        raise ValueError(f"test_idx {test_idx} out of range (have {len(Psi_list_test)} test inputs)")
 
-    if domain_mode == "identity":
-        # Same-shape: build presents directly on inputs
-        train_inputs = [X for X, Y in trains]
-        all_inputs = train_inputs + [X_test_canonical]
-        all_presents = [build_present(X, options_used, phases) for X in all_inputs]
+    Psi_test = Psi_list_test[test_idx]
 
-    elif domain_mode == "uniform_scale":
+    # Determine test grid dimensions for domain handling
+    test_grid_for_predict = X_test_canonical  # Default
+
+    if domain_mode == "uniform_scale":
         # Uniform replication: replicate by factor k
         k = scale_or_none
-        if k is None or k <= 0:
-            # Invalid scale factor, fall back to identity
-            train_inputs = [X for X, Y in trains]
-            all_inputs = train_inputs + [X_test_canonical]
-            all_presents = [build_present(X, options_used, phases) for X in all_inputs]
-        else:
-            # Replicate all inputs by factor k
-            train_inputs_replicated = [_replicate_uniform(X, k) for X, Y in trains]
-            test_replicated = _replicate_uniform(X_test_canonical, k)
-            test_grid_for_wl = test_replicated  # Track replicated grid
-            all_inputs = train_inputs_replicated + [test_replicated]
-            all_presents = [build_present(X_rep, options_used, phases) for X_rep in all_inputs]
+        if k is not None and k > 0:
+            test_grid_for_predict = _replicate_uniform(X_test_canonical, k)
 
     elif domain_mode == "bands":
-        # Band-based mapping: for now, use output space (simplified)
-        # Full implementation would map X through bands to target space
-        # For now, use training outputs directly (same as compilation)
-        train_outputs = [Y for X, Y in trains]
-        # For test, we don't have Y, so fall back to identity for now
-        # This is a limitation of the simplified implementation
-        train_presents = [build_present(Y, options_used, phases) for Y in train_outputs]
-        test_present = build_present(X_test_canonical, options_used, phases)  # Fallback
-        all_presents = train_presents + [test_present]
+        # Band-based mapping: for now, predict on identity domain (limitation)
+        test_grid_for_predict = X_test_canonical
 
-    else:
-        # Unknown domain mode, fall back to identity
-        train_inputs = [X for X, Y in trains]
-        all_inputs = train_inputs + [X_test_canonical]
-        all_presents = [build_present(X, options_used, phases) for X in all_inputs]
-
-    # Run WL on disjoint union {trains ∪ test}
-    # This gives DIFFERENT hashes than compile-time WL (trains only)
-    # because adding test changes global refinement patterns
-    Psi_list_all, wl_iter_count_predict = wl_disjoint_union(all_presents, depth=wl_depth)
-
-    # Rebuild ρ from training positions using NEW WL hashes
-    # Two modes: strict (concrete colors) or orbit (abstract colors + canonicalization)
-
-    if label_mode == "strict":
-        # Strict mode: training positions map to concrete colors
-        rho_new = {}
-        for train_idx, (X, Y) in enumerate(trains):
-            Psi = Psi_list_all[train_idx]
-            for pos in Psi.keys():
-                r, c = pos
-                wl_hash = Psi[pos]
-                y_color = Y[r][c]
-
-                # Check single-valued property (should still hold)
-                if wl_hash in rho_new:
-                    if rho_new[wl_hash] != y_color:
-                        # Conflict - shouldn't happen if compile succeeded
-                        # Use first color seen (defensive)
-                        pass
-                else:
-                    rho_new[wl_hash] = y_color
-
-    else:  # label_mode == "orbit"
-        # Orbit mode: rebuild abstract ρ̃, will canonicalize later
-        # rho_new holds abstract colors (not canonical yet)
-        rho_new = {}
-        for train_idx, (X, Y) in enumerate(trains):
-            Psi = Psi_list_all[train_idx]
-            for pos in Psi.keys():
-                r, c = pos
-                wl_hash = Psi[pos]
-                y_color = Y[r][c]
-
-                if wl_hash not in rho_new:
-                    # First time seeing this role - record abstract color
-                    rho_new[wl_hash] = y_color
-                # else: may differ across trains (orbit mode allows this)
-
-    # Extract Psi for test input (last one)
-    Psi_test = Psi_list_all[-1]
-
-    # Debug logging per WO-MK-05.2a section 4
-    # Log class ID counts and overlap
+    # Debug logging: check role alignment
     train_class_ids = set()
     for train_idx in range(len(trains)):
-        Psi_train = Psi_list_all[train_idx]
+        Psi_train = Psi_list_train[train_idx]
         train_classes = set(Psi_train.values())
         train_class_ids.update(train_classes)
         print(f"  Train grid {train_idx}: {len(train_classes)} unique class IDs")
@@ -1374,36 +1348,35 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
 
     overlap = train_class_ids & test_class_ids
     print(f"  Overlap (train ∩ test): {len(overlap)} class IDs")
-    print(f"  ρ coverage: {len(rho_new)} entries")
+    print(f"  ρ coverage: {len(rho)} entries")
 
     if len(overlap) == 0:
-        print(f"  ⚠️ WARNING: Zero overlap! Union-WL alignment issue.")
+        print(f"  ⚠️ WARNING: Zero overlap! This shouldn't happen with union-WL!")
 
-    # Predict using rebuilt rho
+    # Predict using compile-time ρ
     # Two modes: strict (direct) or orbit (canonicalize)
 
     if label_mode == "strict":
-        # Strict mode: direct color prediction
-        # IMPORTANT: Must use the same grid that Psi_test was built from
+        # Strict mode: direct color prediction using compile-time ρ
         try:
-            Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, rho_new)
+            Y_pred_canonical = _predict_with_rho(test_grid_for_predict, Psi_test, rho)
         except ValueError as e:
             # present_gap_unseen_class: test has role IDs not in training
-            # Per math_spec_addon_airtight.md: treat as palette issue, apply canonicalizer
+            # This shouldn't happen with union-WL, but handle gracefully
             error_msg = str(e)
             print(f"  ⚠️  Strict mode failed: {error_msg}")
             print(f"  → Falling back to orbit/canonicalizer approach")
 
             # Build abstract ρ treating unseen roles as abstract colors
             # Get present for test (for structural signatures)
-            test_present = build_present(test_grid_for_wl, options_used, phases)
+            test_present = build_present(test_grid_for_predict, options_used, phases)
 
             # Apply canonicalizer to get canonical ρ from abstract colors
             canonical_rho, canon_perm = canonicalize_palette(
-                rho_new,            # abstract_rho (training mappings)
-                Psi_test,           # partition on test
-                test_grid_for_wl,   # input grid
-                test_present,       # present (for signatures)
+                rho,                      # compile-time ρ (training mappings)
+                Psi_test,                 # partition on test
+                test_grid_for_predict,    # input grid
+                test_present,             # present (for signatures)
                 method="lex_min"
             )
 
@@ -1411,7 +1384,7 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
 
             # Predict with canonical colors
             try:
-                Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, canonical_rho)
+                Y_pred_canonical = _predict_with_rho(test_grid_for_predict, Psi_test, canonical_rho)
             except ValueError as e2:
                 error_msg2 = str(e2)
                 print(f"  ❌ Canonicalization also failed: {error_msg2}")
@@ -1422,14 +1395,14 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         # Per WO-MK-05.5 Section C: canonicalize from inputs + abstract coloring
 
         # Get present for test (for structural signatures)
-        test_present = build_present(test_grid_for_wl, options_used, phases)
+        test_present = build_present(test_grid_for_predict, options_used, phases)
 
         # Apply canonicalizer to get canonical ρ
         canonical_rho, canon_perm = canonicalize_palette(
-            rho_new,            # abstract_rho
-            Psi_test,           # partition on test
-            test_grid_for_wl,   # input grid
-            test_present,       # present (for signatures)
+            rho,                      # compile-time abstract ρ̃
+            Psi_test,                 # partition on test
+            test_grid_for_predict,    # input grid
+            test_present,             # present (for signatures)
             method="lex_min"
         )
 
@@ -1437,7 +1410,7 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
 
         # Predict with canonical colors
         try:
-            Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, canonical_rho)
+            Y_pred_canonical = _predict_with_rho(test_grid_for_predict, Psi_test, canonical_rho)
         except ValueError as e:
             error_msg = str(e)
             print(f"  ❌ Predict failed after canonicalization: {error_msg}")
