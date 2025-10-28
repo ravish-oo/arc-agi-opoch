@@ -5,11 +5,13 @@ Runs WL on the disjoint union of all training inputs to produce
 aligned role IDs across examples. This is the key to CPRQ:
 positions with same role across examples get same ID.
 
-Atom seed: (sameColor_tag, sameComp8_tag, bandRow_tag, bandCol_tag, CBC_token_or_0, is_border)
+Atom seed (per math_spec line 46): (X[p], CBC_token_or_0, is_border)
 
 Algorithm:
-1. Build initial coloring from atom seed
-2. Iterate: hash each position's (color, neighbor_colors)
+1. Build initial coloring from minimal atom (NO positional tags)
+2. Iterate: hash(current_color, adj_bag, comp_bag, bandRow_bag, bandCol_bag)
+   - Adjacency (E4/E8): local neighborhoods
+   - Equivalences (sameComp8, bandRow, bandCol): global class bags
 3. Stop at fixed point or 50 iterations
 """
 
@@ -25,9 +27,13 @@ Partition = Dict[Position, int]
 GlobalPosition = Tuple[int, Position]  # (grid_index, (r, c))
 
 
-def wl_disjoint_union(presents: List[Present], debug_positions: List[GlobalPosition] = None) -> List[Partition]:
+def wl_disjoint_union(
+    presents: List[Present],
+    depth: int = 1,
+    debug_positions: List[GlobalPosition] = None
+) -> List[Partition]:
     """
-    Run 1-WL on disjoint union of all grids.
+    Run WL on disjoint union of all grids.
 
     The disjoint union treats each grid as separate, but the WL refinement
     process assigns consistent role IDs to positions with similar neighborhoods
@@ -35,6 +41,7 @@ def wl_disjoint_union(presents: List[Present], debug_positions: List[GlobalPosit
 
     Args:
         presents: List of Present dicts, one per training input
+        depth: WL depth (1 or 2). depth=1 is standard WL, depth=2 is 2-WL
         debug_positions: Optional list of global positions to trace
 
     Returns:
@@ -46,21 +53,32 @@ def wl_disjoint_union(presents: List[Present], debug_positions: List[GlobalPosit
         >>> g2 = Grid([[5, 6], [7, 8]])
         >>> p1 = build_present(g1, {})
         >>> p2 = build_present(g2, {})
-        >>> parts = wl_disjoint_union([p1, p2])
+        >>> parts = wl_disjoint_union([p1, p2], depth=1)
         >>> len(parts) == 2
         True
     """
     if not presents:
         return []
 
-    # Build initial coloring from atom seed
+    if depth == 2:
+        # 2-WL: refine on pairs instead of nodes
+        return _wl_2_disjoint_union(presents, debug_positions)
+
+    # depth=1: standard WL (current behavior)
+    # Build initial coloring from atom seed (minimal: X, CBC, border)
     coloring = _build_initial_coloring(presents)
 
-    # Build edge relations (E4 from all grids)
-    edges = _build_edges(presents)
+    # Build relation data
+    # Per math_spec: adjacency (E4/E8) as edges, equivalences as class membership
+    adjacency_edges, equivalence_classes = _build_relation_data(presents)
 
     # Iterate WL refinement to fixed point
-    coloring = _refine_to_fixed_point(coloring, edges, debug_positions=debug_positions)
+    coloring = _refine_to_fixed_point(
+        coloring,
+        adjacency_edges,
+        equivalence_classes,
+        debug_positions=debug_positions
+    )
 
     # Split back into per-grid partitions
     partitions = _split_into_grids(coloring, presents)
@@ -72,7 +90,10 @@ def _build_initial_coloring(presents: List[Present]) -> Dict[GlobalPosition, int
     """
     Build initial coloring from atom seed.
 
-    Atom seed: (sameColor_tag, sameComp8_tag, bandRow_tag, bandCol_tag, CBC_token_or_0, is_border)
+    Per WO-MK-05.2a: Minimal atom = (X[p], CBC_token_or_0, is_border)
+
+    Bands and components are NOT in the atom - they influence WL only via
+    neighbor multisets during iteration (as relations, not unary tags).
 
     Args:
         presents: List of Present dicts
@@ -85,9 +106,6 @@ def _build_initial_coloring(presents: List[Present]) -> Dict[GlobalPosition, int
 
     for grid_idx, present in enumerate(presents):
         grid = present['grid']  # Get the actual grid for raw color access
-        same_comp8 = present['sameComp8']
-        band_row = present['bandRow']
-        band_col = present['bandCol']
 
         # Get CBC token if present (CBC1 or CBC2, preferring CBC2)
         cbc_tokens = None
@@ -99,20 +117,20 @@ def _build_initial_coloring(presents: List[Present]) -> Dict[GlobalPosition, int
         # Get grid dimensions from grid
         H = grid.H
         W = grid.W
-        positions = list(same_comp8.keys())
+
+        # Get all positions from any present relation
+        positions = list(present['sameComp8'].keys())
 
         for pos in positions:
             r, c = pos
             is_border = (r == 0 or r == H - 1 or c == 0 or c == W - 1)
 
-            # Build atom with RAW color value (0-9) for global stability
-            color_tag = grid[r][c]  # Raw palette value, globally stable across disjoint union
-            comp8_tag = same_comp8[pos]
-            row_tag = band_row[pos]
-            col_tag = band_col[pos]
+            # Minimal atom: only raw color, CBC token, and border flag
+            # NO band tags, NO component tags
+            color_tag = grid[r][c]  # Raw palette value 0-9
             cbc_token = cbc_tokens[pos] if cbc_tokens else 0
 
-            atom = (color_tag, comp8_tag, row_tag, col_tag, cbc_token, is_border)
+            atom = (color_tag, cbc_token, is_border)
 
             global_pos = (grid_idx, pos)
             atoms.append((atom, global_pos))
@@ -127,77 +145,161 @@ def _build_initial_coloring(presents: List[Present]) -> Dict[GlobalPosition, int
             atom_to_positions[atom_key] = []
         atom_to_positions[atom_key].append(gpos)
 
-    # Assign color IDs deterministically
+    # Assign colors deterministically using atom hash directly (stable)
     coloring: Dict[GlobalPosition, int] = {}
-    color_id = 0
 
     for atom_key in sorted(atom_to_positions.keys()):
         for gpos in sorted(atom_to_positions[atom_key]):
-            coloring[gpos] = color_id
-        color_id += 1
+            # Use atom hash directly as color (stable across unions)
+            coloring[gpos] = atom_key
 
     return coloring
 
 
-def _build_edges(presents: List[Present]) -> Set[Tuple[GlobalPosition, GlobalPosition]]:
+def _build_relation_data(presents: List[Present]) -> Tuple[Dict[str, Set], Dict[str, Dict[GlobalPosition, List[GlobalPosition]]]]:
     """
-    Build edge set from E4 relations across all grids.
+    Build relation data for WL iteration.
+
+    Per math_spec lines 46-51:
+    - Adjacency relations (E4, E8): edge sets for local neighborhoods
+    - Equivalence relations (sameComp8, bandRow, bandCol): class membership maps
+      for global bags
 
     Args:
         presents: List of Present dicts
 
     Returns:
-        Set of (global_pos1, global_pos2) edges
+        Tuple of (adjacency_edges, equivalence_classes)
+        - adjacency_edges: Dict mapping relation name to edge set
+        - equivalence_classes: Dict mapping relation name to
+          {global_pos: [all_class_members]} for computing bags
     """
-    edges: Set[Tuple[GlobalPosition, GlobalPosition]] = []
+    adjacency_edges: Dict[str, Set] = {
+        'E4': set(),
+        'E8': set(),
+    }
+
+    equivalence_classes: Dict[str, Dict[GlobalPosition, List[GlobalPosition]]] = {
+        'sameComp8': {},
+        'bandRow': {},
+        'bandCol': {},
+    }
 
     for grid_idx, present in enumerate(presents):
-        e4_pairs = present['E4']
+        # E4 adjacency (always present)
+        if 'E4' in present:
+            for pos1, pos2 in present['E4']:
+                gpos1 = (grid_idx, pos1)
+                gpos2 = (grid_idx, pos2)
+                adjacency_edges['E4'].add((gpos1, gpos2))
+                adjacency_edges['E4'].add((gpos2, gpos1))
 
-        for pos1, pos2 in e4_pairs:
-            gpos1 = (grid_idx, pos1)
-            gpos2 = (grid_idx, pos2)
+        # E8 adjacency (optional escalation)
+        if 'E8' in present:
+            for pos1, pos2 in present['E8']:
+                gpos1 = (grid_idx, pos1)
+                gpos2 = (grid_idx, pos2)
+                adjacency_edges['E8'].add((gpos1, gpos2))
+                adjacency_edges['E8'].add((gpos2, gpos1))
 
-            # Add both directions for undirected graph
-            edges.append((gpos1, gpos2))
-            edges.append((gpos2, gpos1))
+        # Equivalence relations: map each position to ALL members of its class
+        # Per math_spec line 70-71: "as bags of current WL colors"
 
-    return set(edges)
+        # sameComp8
+        if 'sameComp8' in present:
+            comp_partition = present['sameComp8']
+            # Group by equivalence class
+            classes: Dict[int, List[Position]] = {}
+            for pos, cls_id in comp_partition.items():
+                if cls_id not in classes:
+                    classes[cls_id] = []
+                classes[cls_id].append(pos)
+            # Map each position to all members of its class
+            for cls_id, positions in classes.items():
+                for pos in positions:
+                    gpos = (grid_idx, pos)
+                    # Store all class members (including self) for bag computation
+                    equivalence_classes['sameComp8'][gpos] = [
+                        (grid_idx, p) for p in positions
+                    ]
+
+        # bandRow
+        if 'bandRow' in present:
+            band_partition = present['bandRow']
+            classes: Dict[int, List[Position]] = {}
+            for pos, cls_id in band_partition.items():
+                if cls_id not in classes:
+                    classes[cls_id] = []
+                classes[cls_id].append(pos)
+            for cls_id, positions in classes.items():
+                for pos in positions:
+                    gpos = (grid_idx, pos)
+                    equivalence_classes['bandRow'][gpos] = [
+                        (grid_idx, p) for p in positions
+                    ]
+
+        # bandCol
+        if 'bandCol' in present:
+            band_partition = present['bandCol']
+            classes: Dict[int, List[Position]] = {}
+            for pos, cls_id in band_partition.items():
+                if cls_id not in classes:
+                    classes[cls_id] = []
+                classes[cls_id].append(pos)
+            for cls_id, positions in classes.items():
+                for pos in positions:
+                    gpos = (grid_idx, pos)
+                    equivalence_classes['bandCol'][gpos] = [
+                        (grid_idx, p) for p in positions
+                    ]
+
+    return adjacency_edges, equivalence_classes
 
 
 def _refine_to_fixed_point(
     coloring: Dict[GlobalPosition, int],
-    edges: Set[Tuple[GlobalPosition, GlobalPosition]],
+    adjacency_edges: Dict[str, Set[Tuple[GlobalPosition, GlobalPosition]]],
+    equivalence_classes: Dict[str, Dict[GlobalPosition, List[GlobalPosition]]],
     max_iters: int = 50,
     debug_positions: List[GlobalPosition] = None
 ) -> Dict[GlobalPosition, int]:
     """
     Refine coloring using WL until fixed point.
 
-    At each iteration, each position's new color is:
-    hash(current_color, sorted([neighbor_colors]))
+    Per math_spec lines 46-51:
+    - Adjacency (E4/E8): small local neighborhoods → AdjBag
+    - Equivalences (sameComp8, bandRow, bandCol): global class summaries → bags
+
+    At each iteration, signature is:
+    hash(current_color, adj_bag, comp_bag, bandRow_bag, bandCol_bag)
 
     Args:
         coloring: Initial coloring
-        edges: Edge set
+        adjacency_edges: Edge sets for E4/E8
+        equivalence_classes: Class membership maps for sameComp8, bandRow, bandCol
         max_iters: Maximum iterations (default 50)
         debug_positions: Optional list of positions to trace
 
     Returns:
         Final coloring after fixed point
     """
-    # Build adjacency list for faster lookup
-    neighbors: Dict[GlobalPosition, List[GlobalPosition]] = {}
-    for pos in coloring.keys():
-        neighbors[pos] = []
+    # Build adjacency neighbor lists for E4/E8
+    adjacency_neighbors: Dict[str, Dict[GlobalPosition, List[GlobalPosition]]] = {}
 
-    for pos1, pos2 in edges:
-        if pos1 in neighbors:
-            neighbors[pos1].append(pos2)
+    for relation_name, edges in adjacency_edges.items():
+        neighbors: Dict[GlobalPosition, List[GlobalPosition]] = {}
+        for pos in coloring.keys():
+            neighbors[pos] = []
 
-    # Ensure deterministic neighbor order
-    for pos in neighbors:
-        neighbors[pos] = sorted(neighbors[pos])
+        for pos1, pos2 in edges:
+            if pos1 in neighbors:
+                neighbors[pos1].append(pos2)
+
+        # Ensure deterministic neighbor order
+        for pos in neighbors:
+            neighbors[pos] = sorted(neighbors[pos])
+
+        adjacency_neighbors[relation_name] = neighbors
 
     # Debug tracking
     if debug_positions:
@@ -217,12 +319,31 @@ def _refine_to_fixed_point(
         for pos in sorted(coloring.keys()):
             current_color = coloring[pos]
 
-            # Get neighbor colors (in sorted order)
-            neighbor_colors = [coloring[nbr] for nbr in neighbors.get(pos, [])]
-            neighbor_colors.sort()
+            # Per math_spec line 50: hash(CBC, phases?, AdjBag, CompBag)
+            # But CBC and phases are already in current_color from init
+            # So we compute: hash(current_color, adj_bag, comp_bag, bandRow_bag, bandCol_bag)
 
-            # Signature: (current_color, neighbor_colors)
-            signature = (current_color, tuple(neighbor_colors))
+            # 1. Adjacency bags (E4/E8) - local neighborhoods
+            adj_bag = []
+            for rel_name in sorted(adjacency_neighbors.keys()):
+                neighbors = adjacency_neighbors[rel_name].get(pos, [])
+                neighbor_colors = [coloring[nbr] for nbr in neighbors]
+                neighbor_colors.sort()
+                if neighbor_colors:  # Only include non-empty
+                    adj_bag.append((rel_name, tuple(neighbor_colors)))
+
+            # 2. Equivalence bags (sameComp8, bandRow, bandCol) - global class summaries
+            equiv_bag = []
+            for rel_name in sorted(equivalence_classes.keys()):
+                class_members = equivalence_classes[rel_name].get(pos, [])
+                if class_members:
+                    # Bag of ALL WL colors in this equivalence class
+                    class_colors = [coloring[member] for member in class_members]
+                    class_colors.sort()
+                    equiv_bag.append((rel_name, tuple(class_colors)))
+
+            # Signature: (current_color, adjacency_bags, equivalence_bags)
+            signature = (current_color, tuple(adj_bag), tuple(equiv_bag))
             sig_hash = stable_hash64(signature)
 
             if sig_hash not in color_signatures:
@@ -233,15 +354,17 @@ def _refine_to_fixed_point(
             if debug_positions and pos in debug_positions:
                 print(f"Iter {iteration}: {pos}")
                 print(f"  Current color: {current_color}")
-                print(f"  Neighbor colors: {neighbor_colors}")
+                for rel_name, multiset in adj_bag:
+                    print(f"  Adj-{rel_name}: {multiset[:3]}{'...' if len(multiset) > 3 else ''}")
+                for rel_name, multiset in equiv_bag:
+                    print(f"  Equiv-{rel_name}: {len(multiset)} members")
                 print(f"  Signature hash: {sig_hash}")
 
         # Assign new colors based on signatures
-        new_color_id = 0
+        # Use signature hash directly as color (stable across unions)
         for sig_hash in sorted(color_signatures.keys()):
             for pos in sorted(color_signatures[sig_hash]):
-                new_coloring[pos] = new_color_id
-            new_color_id += 1
+                new_coloring[pos] = sig_hash
 
         # Debug trace new colors
         if debug_positions:
@@ -278,37 +401,130 @@ def _split_into_grids(
     """
     Split global coloring back into per-grid partitions.
 
-    Uses GLOBAL relabeling to preserve WL alignment across grids.
-    Positions with the same WL color get the same role ID regardless of grid.
+    IMPORTANT: Does NOT relabel WL colors. Returns the stable_hash64 values
+    directly as role IDs. This ensures role IDs are stable across different
+    disjoint unions (e.g., [train1, train2, train3] vs [train1, train2, train3, test]).
 
     Args:
-        coloring: Global coloring
+        coloring: Global coloring (WL color hashes)
         presents: List of Present dicts (to get positions)
 
     Returns:
-        List of partitions, one per grid
+        List of partitions, one per grid, with WL color hashes as role IDs
     """
-    # Collect all unique WL colors across all grids
-    all_wl_colors = sorted(set(coloring.values()))
-
-    # Create global mapping: WL color -> role ID
-    # This ensures positions with same WL color get same role ID
-    wl_color_to_role = {wl_color: role_id for role_id, wl_color in enumerate(all_wl_colors)}
-
-    # Apply global mapping to each grid
     partitions: List[Partition] = []
     for grid_idx, present in enumerate(presents):
         # Get all positions for this grid
         positions = list(present['sameComp8'].keys())
 
-        # Extract colors for this grid using GLOBAL mapping
+        # Extract WL colors directly (no relabeling)
         partition: Partition = {}
         for pos in positions:
             gpos = (grid_idx, pos)
-            wl_color = coloring[gpos]
-            partition[pos] = wl_color_to_role[wl_color]
+            wl_color_hash = coloring[gpos]
+            # Use WL color hash directly as role ID (stable across unions)
+            partition[pos] = wl_color_hash
 
         partitions.append(partition)
+
+    return partitions
+
+
+def _wl_2_disjoint_union(
+    presents: List[Present],
+    debug_positions: List[GlobalPosition] = None
+) -> List[Partition]:
+    """
+    Run 2-WL on disjoint union.
+
+    2-WL maintains colors for ordered pairs (u, v) instead of individual nodes.
+    This provides more discriminative power than 1-WL.
+
+    Algorithm:
+    1. Initial coloring for pairs based on individual node atoms
+    2. Refine by hashing pair-color + multisets from neighboring pairs
+    3. Derive node coloring from stabilized pair coloring
+
+    Args:
+        presents: List of Present dicts
+        debug_positions: Optional debug positions
+
+    Returns:
+        List of partitions with 2-WL refined colors
+    """
+    if not presents:
+        return []
+
+    # Build 1-WL initial coloring for nodes
+    node_coloring = _build_initial_coloring(presents)
+    adjacency_edges, equivalence_classes = _build_relation_data(presents)
+
+    # Get all positions
+    all_positions = list(node_coloring.keys())
+
+    # Build initial pair coloring: hash(color[u], color[v])
+    pair_coloring: Dict[Tuple[GlobalPosition, GlobalPosition], int] = {}
+
+    for u in all_positions:
+        for v in all_positions:
+            # Only pairs within same grid
+            if u[0] == v[0]:  # same grid_idx
+                pair_color = stable_hash64((node_coloring[u], node_coloring[v]))
+                pair_coloring[(u, v)] = pair_color
+
+    # Refine pairs to fixed point
+    for iteration in range(50):
+        new_pair_coloring = {}
+        changed = False
+
+        for (u, v), current_pair_color in sorted(pair_coloring.items()):
+            # Collect multiset of neighboring pair colors
+            # Neighbors of (u,v): pairs sharing u or v
+            neighbor_pairs_multiset = []
+
+            # Pairs (u, w) for all w != v in same grid
+            for w in all_positions:
+                if w[0] == u[0] and w != v:  # same grid as u, not v
+                    if (u, w) in pair_coloring:
+                        neighbor_pairs_multiset.append(pair_coloring[(u, w)])
+
+            # Pairs (w, v) for all w != u in same grid
+            for w in all_positions:
+                if w[0] == v[0] and w != u:  # same grid as v, not u
+                    if (w, v) in pair_coloring:
+                        neighbor_pairs_multiset.append(pair_coloring[(w, v)])
+
+            neighbor_pairs_multiset.sort()
+
+            # New pair color
+            new_color = stable_hash64((current_pair_color, tuple(neighbor_pairs_multiset)))
+            new_pair_coloring[(u, v)] = new_color
+
+            if new_color != current_pair_color:
+                changed = True
+
+        pair_coloring = new_pair_coloring
+
+        if not changed:
+            break
+
+    # Derive node coloring from pair coloring
+    # Node color = hash of multiset of its pair colors
+    final_node_coloring: Dict[GlobalPosition, int] = {}
+
+    for u in all_positions:
+        # Collect all pair colors involving u
+        pair_colors_for_u = []
+        for v in all_positions:
+            if v[0] == u[0]:  # same grid
+                if (u, v) in pair_coloring:
+                    pair_colors_for_u.append(pair_coloring[(u, v)])
+
+        pair_colors_for_u.sort()
+        final_node_coloring[u] = stable_hash64(tuple(pair_colors_for_u))
+
+    # Split back into per-grid partitions
+    partitions = _split_into_grids(final_node_coloring, presents)
 
     return partitions
 
