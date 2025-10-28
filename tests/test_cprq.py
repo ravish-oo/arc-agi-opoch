@@ -13,7 +13,7 @@ import pytest
 from grid import Grid
 from cprq import (
     compile_CPRQ, count_cells_wrong,
-    _build_label_partition, _build_rho, _predict_with_rho, _grids_equal
+    _build_label_partition, _check_single_valued_and_build_rho, _predict_with_rho, _grids_equal
 )
 
 

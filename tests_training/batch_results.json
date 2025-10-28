@@ -1,0 +1,392 @@
+[
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "00576224"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "007bbfb7"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "009d5c81"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "00d62c1b"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "00dbd492"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "017c7c7b"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "025d127b"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "03560426"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "045e512c"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0520fde7"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "05269061"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "05a7bcf2"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "05f2a901"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0607ce86"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0692e18c"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "06df4c85"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "070dd51e"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "08ed6ac7"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "09629e4f"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0962bcdd"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "09c534e7"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "shape_change_unsat",
+    "opts": {},
+    "task_id": "0a1d4ef5"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0a2355a6"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0a938d79"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "shape_change_unsat",
+    "opts": {},
+    "task_id": "0b148d64"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0b17323b"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0bb8deee"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0becf7df"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0c786b71"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0c9aba6e"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0ca9ddb6"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0d3d703e"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0d87d2a6"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0e206a2e"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0e671a1a"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "0f63c0b9"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "103eff5b"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "shape_change_unsat",
+    "opts": {},
+    "task_id": "10fcaaa3"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "11852cab"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "1190bc91"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "shape_change_unsat",
+    "opts": {},
+    "task_id": "1190e5a7"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "11dc524f"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "11e1fe23"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "12422b43"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "shape_change_unsat",
+    "opts": {},
+    "task_id": "12997ef3"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "12eac192"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "13713586"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "137eaa0f"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "137f0df0"
+  },
+  {
+    "status": "compile_failed",
+    "witness_type": "training_mismatch",
+    "opts": {
+      "CBC2": true
+    },
+    "task_id": "13f06aa5"
+  }
+]

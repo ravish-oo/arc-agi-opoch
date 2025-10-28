@@ -5,7 +5,7 @@ All relations are built ONLY from input grid X, never from labels Y or deltas.
 AST linter enforces this ban at test time.
 
 Always-on relations:
-- E4, sameRow, sameCol, sameComp8, bandRow, bandCol
+- E4, sameRow, sameCol, sameColor, sameComp8, bandRow, bandCol
 
 Optional relations (via opts):
 - E8, CBC1, CBC2
@@ -33,7 +33,7 @@ def build_present(X: Grid, opts: Dict[str, bool]) -> Present:
     """
     Build input-only present from grid X.
 
-    Always includes: E4, sameRow, sameCol, sameComp8, bandRow, bandCol
+    Always includes: E4, sameRow, sameCol, sameColor, sameComp8, bandRow, bandCol
     Optional (via opts): E8, CBC1, CBC2
 
     Args:
@@ -51,10 +51,14 @@ def build_present(X: Grid, opts: Dict[str, bool]) -> Present:
     """
     present: Present = {}
 
+    # Store the grid itself for WL to access raw colors
+    present['grid'] = X
+
     # Always-on relations
     present['E4'] = _build_E4(X)
     present['sameRow'] = _build_sameRow(X)
     present['sameCol'] = _build_sameCol(X)
+    present['sameColor'] = _build_sameColor(X)
     present['sameComp8'] = sameComp8(X)
 
     row_bands, col_bands = detect_bands(X)
@@ -116,6 +120,37 @@ def _build_sameCol(X: Grid) -> Partition:
     partition = {}
     for r, c in X.positions():
         partition[(r, c)] = c
+    return partition
+
+
+def _build_sameColor(X: Grid) -> Partition:
+    """
+    Build sameColor equivalence: positions with same input value.
+
+    This is input-only, presentation-free. Two positions are related iff X[p] == X[q].
+    Essential for WL to distinguish roles by input color.
+
+    Args:
+        X: Input grid
+
+    Returns:
+        Partition where positions with same color value are in same block
+
+    Examples:
+        >>> g = Grid([[1, 2], [1, 2]])
+        >>> same_c = _build_sameColor(g)
+        >>> same_c[(0, 0)] == same_c[(1, 0)]  # Both are color 1
+        True
+        >>> same_c[(0, 1)] == same_c[(1, 1)]  # Both are color 2
+        True
+        >>> same_c[(0, 0)] != same_c[(0, 1)]  # Different colors
+        True
+    """
+    partition = {}
+    # Group by color value
+    for r, c in X.positions():
+        color = X[r][c]
+        partition[(r, c)] = color
     return partition
 
 

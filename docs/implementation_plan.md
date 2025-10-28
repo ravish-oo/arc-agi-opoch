@@ -57,7 +57,7 @@ Each item: file, ceiling, contract, tests, reviewer gates.
 * Tests: permutation of train order gives identical IDs; fixed-point reached
 * Gates: no color arithmetic; no coordinates
 
-**MK-05 CPRQ**
+**MK-05 CPRQ** ✅ COMPLETE
 
 * Files: `cprq.py`
 * Contract: `compile_CPRQ(trains, base_opts)->(Psi_list, rho, opts_used | witness)`

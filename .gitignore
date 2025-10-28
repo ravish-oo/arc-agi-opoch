@@ -208,3 +208,7 @@ __marimo__/
 
 data/
 reviews/
+results*
+FINDINGS.md
+MK05_FIX_SUMMARY.md
+runs/
