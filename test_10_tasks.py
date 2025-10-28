@@ -85,10 +85,10 @@ with open(OUTPUT_FILE, 'w') as f:
             continue
 
         # Unpack compilation result
-        Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count = result
+        Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode = result
         num_roles = len(set(c for psi in Psi_list for c in psi.values()))
 
-        write_and_print(f, f'✅ Compiled: π={pi_tag}, depth={wl_depth}, iter={wl_iter_count}, roles={num_roles}, ρ_size={len(rho)}')
+        write_and_print(f, f'✅ Compiled: π={pi_tag}, depth={wl_depth}, iter={wl_iter_count}, mode={label_mode}, roles={num_roles}, ρ_size={len(rho)}')
 
         # Test inputs
         test_inputs = [Grid(p['input']) for p in task['test']]

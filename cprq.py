@@ -18,6 +18,12 @@ from grid import Grid, pi_canon, apply_transform, get_inverse_transform
 from present import build_present, Present, detect_bands, check_phase_consistency
 from wl import wl_disjoint_union
 from equiv import is_refinement, relabel_stable, new_partition_from_equiv
+from label_orbit import (
+    compute_orbit_kernel,
+    build_abstract_rho,
+    canonicalize_palette,
+    apply_canonical_palette
+)
 from stable import stable_hash64
 
 
@@ -25,8 +31,8 @@ from stable import stable_hash64
 Position = Tuple[int, int]
 Partition = Dict[Position, int]
 Witness = Dict[str, Any]
-# CompileResult: (Psi_list, rho, wl_depth, opts, domain_mode, scale_factor_or_band_map, pi_tag, phases, wl_iter_count)
-CompileResult = Tuple[List[Partition], Dict[int, int], int, Dict[str, bool], str, Optional[Any], str, Tuple[Optional[int], Optional[int], Optional[int]], int]
+# CompileResult: (Psi_list, rho, wl_depth, opts, domain_mode, scale_factor_or_band_map, pi_tag, phases, wl_iter_count, label_mode)
+CompileResult = Tuple[List[Partition], Dict[int, int], int, Dict[str, bool], str, Optional[Any], str, Tuple[Optional[int], Optional[int], Optional[int]], int, str]
 BandMap = Tuple[Dict[int, int], Dict[int, int]]  # (row_map, col_map)
 
 
@@ -42,6 +48,103 @@ def _escalation_ladder() -> List[Tuple[int, Dict[str, bool]]]:
         (1, {'E8': True}),  # Escalation 1: depth=1 + E8
         (2, {}),  # Escalation 2: depth=2
     ]
+
+
+def _try_orbit_compile(
+    trains: List[Tuple[Grid, Grid]],
+    domain_mode: str,
+    scale_or_none: Optional[int],
+    pi_tag: str,
+    phases: Tuple[Optional[int], Optional[int], Optional[int]]
+) -> Tuple[Optional[CompileResult], Optional[Witness]]:
+    """
+    Try orbit CPRQ: use ker_H (label orbit kernel) instead of strict ker(c_i).
+
+    Per math_spec_addon.md: Treat colors up to palette permutation.
+    This eliminates palette-conflict witnesses.
+
+    Per WO-MK-05.5 Section A.2:
+    - Use same escalation ladder as strict
+    - Compute Ẽ_lab = Int^𝒢(⋀ ker_H(c_i))
+    - Build abstract ρ̃ (ALWAYS exists)
+    - NO canonicalization here (happens at predict)
+
+    Returns:
+        Success: ((E_tilde_list, abstract_rho, ..., label_mode="orbit"), None)
+        Failure: (None, witness) - only if present itself insufficient
+    """
+    # Compute orbit kernel (label equivalence up to permutation)
+    L_orbit = compute_orbit_kernel(trains)
+
+    # Try escalation ladder with orbit kernel
+    for wl_depth, opts in _escalation_ladder():
+        # Compute K_𝒢 with current escalation
+        KG_partitions, wl_iter_count = compute_KG_trains(trains, opts, wl_depth, phases)
+
+        # Check if K_𝒢 refines L_orbit
+        all_refine = True
+        for train_idx in range(len(trains)):
+            if not is_refinement(KG_partitions[train_idx], L_orbit[train_idx]):
+                all_refine = False
+                break
+
+        if not all_refine:
+            # This escalation level doesn't refine L_orbit - try next
+            continue
+
+        # K_𝒢 refines L_orbit! Compute E_tilde
+        E_tilde_list = []
+        for i in range(len(trains)):
+            E_tilde = meet_partitions(KG_partitions[i], L_orbit[i])
+            E_tilde_list.append(E_tilde)
+
+        # Build abstract ρ̃ (ALWAYS exists in orbit mode)
+        try:
+            abstract_rho = build_abstract_rho(trains, E_tilde_list)
+        except AssertionError as e:
+            # This shouldn't happen if refinement check passed
+            witness = {
+                'type': 'orbit_internal_error',
+                'reason': str(e),
+                'note': 'Abstract ρ̃ failed despite refinement check'
+            }
+            return (None, witness)
+
+        # Verify train reconstruction with abstract colors
+        for train_idx, (X, Y) in enumerate(trains):
+            E_tilde = E_tilde_list[train_idx]
+
+            # Check each role has single abstract color
+            role_colors: Dict[int, List[int]] = {}
+            for pos, role_id in E_tilde.items():
+                r, c = pos
+                color = Y[r][c]
+                if role_id not in role_colors:
+                    role_colors[role_id] = []
+                role_colors[role_id].append(color)
+
+            for role_id, colors in role_colors.items():
+                if len(set(colors)) > 1:
+                    # Multi-color role (shouldn't happen)
+                    witness = {
+                        'type': 'orbit_multi_color_role',
+                        'train_idx': train_idx,
+                        'role_id': role_id,
+                        'colors': list(set(colors))
+                    }
+                    return (None, witness)
+
+        # Success! Return with label_mode="orbit"
+        # Note: abstract_rho will be canonicalized at predict time
+        return ((E_tilde_list, abstract_rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "orbit"), None)
+
+    # All escalations failed - even orbit can't express this
+    witness = {
+        'type': 'orbit_label_split_unexpressible',
+        'reason': 'Exhausted escalation ladder even with orbit kernel',
+        'note': 'Present insufficient even treating colors up to permutation'
+    }
+    return (None, witness)
 
 
 # ============================================================================
@@ -454,15 +557,29 @@ def compile_CPRQ(
         return (None, witness)
 
     # In-place path: X and Y have same shape
-    # Try compilation with escalation ladder (OLD CODE PATH - TEMPORARY)
+    # Per WO-MK-05.5: Try STRICT first, then ORBIT fallback
+
+    # Step 1: Try strict CPRQ (exact label matching)
     for wl_depth, opts in _escalation_ladder():
         result, witness = _try_compile(trains, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases)
         if result is not None:
-            # Success!
+            # Strict CPRQ succeeded!
             return (result, None)
 
-    # All escalations failed
-    # Return witness from last attempt
+    # Step 2: Strict failed - check if we can use orbit fallback
+    # Per math_spec_addon.md: Use orbit if strict fails due to palette conflicts
+    if witness and witness.get('type') == 'label_conflict_unexpressible':
+        # Try orbit path: use ker_H (label orbit kernel) instead of ker(c_i)
+        result_orbit, witness_orbit = _try_orbit_compile(
+            trains, domain_mode, scale_or_none, pi_tag, phases
+        )
+        if result_orbit is not None:
+            # Orbit CPRQ succeeded!
+            return (result_orbit, None)
+        # Orbit also failed - return orbit witness
+        return (None, witness_orbit)
+
+    # Strict failed for non-palette reason - return strict witness
     return (None, witness)
 
 
@@ -533,7 +650,7 @@ def _try_compile(
             return (None, witness)
 
     # Success!
-    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count), None)
+    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "strict"), None)
 
 
 def _try_compile_shape_change(
@@ -621,7 +738,7 @@ def _try_compile_shape_change(
             return (None, witness)
 
     # Success!
-    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count), None)
+    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, "strict"), None)
 
 
 def _build_label_partition(Y: Grid) -> Partition:
@@ -1035,7 +1152,7 @@ def build_receipt(compile_result: CompileResult) -> Dict[str, Any]:
         >>> receipt['domain_mode'] == 'identity'
         True
     """
-    Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count = compile_result
+    Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count, label_mode = compile_result
 
     # Build present_flags from opts
     present_flags = {
@@ -1062,6 +1179,7 @@ def build_receipt(compile_result: CompileResult) -> Dict[str, Any]:
         'cbc_radius': cbc_radius,
         'wl_iter_count': wl_iter_count,
         'domain_mode': domain_mode,
+        'label_mode': label_mode,  # NEW: "strict" or "orbit"
         'phases': {'row_k': row_k, 'col_k': col_k, 'diag_k': diag_k},
         'present_flags': present_flags,
         'num_roles': len(set(c for psi in Psi_list for c in psi.values())),
@@ -1141,7 +1259,7 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         >>> y_pred[0][0] == 5 and y_pred[0][1] == 6
         True
     """
-    Psi_list_train_old, rho_old, wl_depth, options_used, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count_compile = compile_result
+    Psi_list_train_old, rho_old, wl_depth, options_used, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count_compile, label_mode = compile_result
 
     # Π canonicalization: apply same transform to test input
     # Per math_spec.md: "on test, apply to X*, remember inverse"
@@ -1199,23 +1317,42 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
     Psi_list_all, wl_iter_count_predict = wl_disjoint_union(all_presents, depth=wl_depth)
 
     # Rebuild ρ from training positions using NEW WL hashes
-    # Training positions in the union get new hashes, but still map to same Y colors
-    rho_new = {}
-    for train_idx, (X, Y) in enumerate(trains):
-        Psi = Psi_list_all[train_idx]
-        for pos in Psi.keys():
-            r, c = pos
-            wl_hash = Psi[pos]
-            y_color = Y[r][c]
+    # Two modes: strict (concrete colors) or orbit (abstract colors + canonicalization)
 
-            # Check single-valued property (should still hold)
-            if wl_hash in rho_new:
-                if rho_new[wl_hash] != y_color:
-                    # Conflict - shouldn't happen if compile succeeded
-                    # Use first color seen (defensive)
-                    pass
-            else:
-                rho_new[wl_hash] = y_color
+    if label_mode == "strict":
+        # Strict mode: training positions map to concrete colors
+        rho_new = {}
+        for train_idx, (X, Y) in enumerate(trains):
+            Psi = Psi_list_all[train_idx]
+            for pos in Psi.keys():
+                r, c = pos
+                wl_hash = Psi[pos]
+                y_color = Y[r][c]
+
+                # Check single-valued property (should still hold)
+                if wl_hash in rho_new:
+                    if rho_new[wl_hash] != y_color:
+                        # Conflict - shouldn't happen if compile succeeded
+                        # Use first color seen (defensive)
+                        pass
+                else:
+                    rho_new[wl_hash] = y_color
+
+    else:  # label_mode == "orbit"
+        # Orbit mode: rebuild abstract ρ̃, will canonicalize later
+        # rho_new holds abstract colors (not canonical yet)
+        rho_new = {}
+        for train_idx, (X, Y) in enumerate(trains):
+            Psi = Psi_list_all[train_idx]
+            for pos in Psi.keys():
+                r, c = pos
+                wl_hash = Psi[pos]
+                y_color = Y[r][c]
+
+                if wl_hash not in rho_new:
+                    # First time seeing this role - record abstract color
+                    rho_new[wl_hash] = y_color
+                # else: may differ across trains (orbit mode allows this)
 
     # Extract Psi for test input (last one)
     Psi_test = Psi_list_all[-1]
@@ -1239,30 +1376,45 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
     if len(overlap) == 0:
         print(f"  ⚠️ WARNING: Zero overlap! Union-WL alignment issue.")
 
-    # Predict using rebuilt rho (may raise ValueError for unseen classes)
-    # This generates Y in canonical orientation
-    # IMPORTANT: Must use the same grid that Psi_test was built from (test_grid_for_wl)
-    try:
-        Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, rho_new)
-    except ValueError as e:
-        # present_gap_unseen_class witness
-        # Per WO-MK-05.3: "emit a predict-time witness of type present_gap_unseen_class"
-        error_msg = str(e)
-        print(f"  ❌ Predict failed: {error_msg}")
+    # Predict using rebuilt rho
+    # Two modes: strict (direct) or orbit (canonicalize)
 
-        # Extract unseen class_ids from error message (if format matches)
-        unseen_classes = []
+    if label_mode == "strict":
+        # Strict mode: direct color prediction
+        # IMPORTANT: Must use the same grid that Psi_test was built from
         try:
-            # Error message format: "present_gap_unseen_class: Test has N role IDs not seen in training ρ: [list]"
-            if "present_gap_unseen_class" in error_msg:
-                # This is the expected error, witness has already been logged
-                pass
-        except:
-            pass
+            Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, rho_new)
+        except ValueError as e:
+            # present_gap_unseen_class witness
+            error_msg = str(e)
+            print(f"  ❌ Predict failed: {error_msg}")
+            raise ValueError(f"present_gap_unseen_class: {error_msg}") from e
 
-        # For now, raise the error with witness information
-        # In production, this would return a proper witness structure
-        raise ValueError(f"present_gap_unseen_class: {error_msg}") from e
+    else:  # label_mode == "orbit"
+        # Orbit mode: apply canonicalizer N (input-only!)
+        # Per WO-MK-05.5 Section C: canonicalize from inputs + abstract coloring
+
+        # Get present for test (for structural signatures)
+        test_present = build_present(test_grid_for_wl, options_used, phases)
+
+        # Apply canonicalizer to get canonical ρ
+        canonical_rho, canon_perm = canonicalize_palette(
+            rho_new,            # abstract_rho
+            Psi_test,           # partition on test
+            test_grid_for_wl,   # input grid
+            test_present,       # present (for signatures)
+            method="lex_min"
+        )
+
+        print(f"  🎨 Canonicalized palette: {len(canon_perm)} role(s)")
+
+        # Predict with canonical colors
+        try:
+            Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, canonical_rho)
+        except ValueError as e:
+            error_msg = str(e)
+            print(f"  ❌ Predict failed after canonicalization: {error_msg}")
+            raise ValueError(f"present_gap_unseen_class: {error_msg}") from e
 
     # Apply inverse Π transform to get final output
     # Per math_spec.md: "remember inverse" and apply it to output
