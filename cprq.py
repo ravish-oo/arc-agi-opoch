@@ -568,7 +568,8 @@ def compile_CPRQ(
 
     # Step 2: Strict failed - check if we can use orbit fallback
     # Per math_spec_addon.md: Use orbit if strict fails due to palette conflicts
-    if witness and witness.get('type') == 'label_conflict_unexpressible':
+    # Includes both 'label_conflict_unexpressible' and 'refinement_failure'
+    if witness and witness.get('type') in ['label_conflict_unexpressible', 'refinement_failure']:
         # Try orbit path: use ker_H (label orbit kernel) instead of ker(c_i)
         result_orbit, witness_orbit = _try_orbit_compile(
             trains, domain_mode, scale_or_none, pi_tag, phases
@@ -1171,15 +1172,17 @@ def build_receipt(compile_result: CompileResult) -> Dict[str, Any]:
     row_k, col_k, diag_k = phases
 
     # cbc_radius: 0 or 1 (documentation field)
-    cbc_radius = 1 if opts.get('CBC1', False) else 0
+    # Per WO-MK-05.6: CBC at r=1,2,3 always-on
+    cbc_radii = [1, 2, 3]
 
     receipt = {
         'pi_tag': pi_tag,
         'wl_depth': wl_depth,
-        'cbc_radius': cbc_radius,
+        'cbc_radii_used': cbc_radii,  # Updated: all three radii
         'wl_iter_count': wl_iter_count,
         'domain_mode': domain_mode,
-        'label_mode': label_mode,  # NEW: "strict" or "orbit"
+        'label_mode': label_mode,  # "strict" or "orbit"
+        'band_mode': '1D_WL',  # Per WO-MK-05.6: 1D WL bands
         'phases': {'row_k': row_k, 'col_k': col_k, 'diag_k': diag_k},
         'present_flags': present_flags,
         'num_roles': len(set(c for psi in Psi_list for c in psi.values())),
@@ -1385,10 +1388,34 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         try:
             Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, rho_new)
         except ValueError as e:
-            # present_gap_unseen_class witness
+            # present_gap_unseen_class: test has role IDs not in training
+            # Per math_spec_addon_airtight.md: treat as palette issue, apply canonicalizer
             error_msg = str(e)
-            print(f"  ❌ Predict failed: {error_msg}")
-            raise ValueError(f"present_gap_unseen_class: {error_msg}") from e
+            print(f"  ⚠️  Strict mode failed: {error_msg}")
+            print(f"  → Falling back to orbit/canonicalizer approach")
+
+            # Build abstract ρ treating unseen roles as abstract colors
+            # Get present for test (for structural signatures)
+            test_present = build_present(test_grid_for_wl, options_used, phases)
+
+            # Apply canonicalizer to get canonical ρ from abstract colors
+            canonical_rho, canon_perm = canonicalize_palette(
+                rho_new,            # abstract_rho (training mappings)
+                Psi_test,           # partition on test
+                test_grid_for_wl,   # input grid
+                test_present,       # present (for signatures)
+                method="lex_min"
+            )
+
+            print(f"  🎨 Canonicalized palette: {len(canon_perm)} role(s)")
+
+            # Predict with canonical colors
+            try:
+                Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, canonical_rho)
+            except ValueError as e2:
+                error_msg2 = str(e2)
+                print(f"  ❌ Canonicalization also failed: {error_msg2}")
+                raise ValueError(f"present_gap_unseen_class: {error_msg2}") from e2
 
     else:  # label_mode == "orbit"
         # Orbit mode: apply canonicalizer N (input-only!)

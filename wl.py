@@ -112,9 +112,12 @@ def _build_initial_coloring(presents: List[Present]) -> Dict[GlobalPosition, int
     for grid_idx, present in enumerate(presents):
         grid = present['grid']  # Get the actual grid for raw color access
 
-        # Get CBC token if present (CBC1 or CBC2, preferring CBC2)
+        # Get CBC token if present (CBC1, CBC2, or CBC3, preferring highest radius)
+        # Per math_spec_addon_a_bit_more.md: CBC at r=1,2,3 always included
         cbc_tokens = None
-        if 'CBC2' in present:
+        if 'CBC3' in present:
+            cbc_tokens = present['CBC3']
+        elif 'CBC2' in present:
             cbc_tokens = present['CBC2']
         elif 'CBC1' in present:
             cbc_tokens = present['CBC1']
@@ -130,7 +133,9 @@ def _build_initial_coloring(presents: List[Present]) -> Dict[GlobalPosition, int
             r, c = pos
             is_border = (r == 0 or r == H - 1 or c == 0 or c == W - 1)
 
-            # Minimal atom: only raw color, CBC token, and border flag
+            # Minimal atom: raw color, CBC token, and border flag
+            # Per math_spec.md line 46: hash(CBC, raw, phases?)
+            # Raw color needed for colormap tasks
             # NO band tags, NO component tags
             color_tag = grid[r][c]  # Raw palette value 0-9
             cbc_token = cbc_tokens[pos] if cbc_tokens else 0
