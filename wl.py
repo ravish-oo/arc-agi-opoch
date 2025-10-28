@@ -39,6 +39,11 @@ def wl_disjoint_union(
     process assigns consistent role IDs to positions with similar neighborhoods
     across all grids.
 
+    Properties:
+        - Permutation invariance: Reordering grids produces equivalent partitions
+          (roles may be renumbered but structure preserved)
+        - Alignment: Positions across grids get same role ID iff WL-indistinguishable
+
     Args:
         presents: List of Present dicts, one per training input
         depth: WL depth (1 or 2). depth=1 is standard WL, depth=2 is 2-WL

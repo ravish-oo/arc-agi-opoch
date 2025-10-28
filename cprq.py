@@ -44,6 +44,196 @@ def _escalation_ladder() -> List[Tuple[int, Dict[str, bool]]]:
     ]
 
 
+# ============================================================================
+# Formula Objects: Making E* = (⋀ K_𝒢(X_i)) ∧ Int^𝒢(⋀ ker(c_i)) explicit
+# ============================================================================
+
+def meet_partitions(p1: Partition, p2: Partition) -> Partition:
+    """
+    Compute the meet (finest common refinement) of two partitions.
+
+    The meet p1 ∧ p2 splits each block of p1 by blocks of p2.
+    Result: positions have same class in meet iff they have same class in BOTH p1 and p2.
+
+    Per WO-MK-05.4: "E* = meet_partitions(KG_train, E_int)"
+
+    Args:
+        p1, p2: Partitions (position -> class_id dicts)
+
+    Returns:
+        Meet partition with positions grouped by (p1[pos], p2[pos]) pairs
+
+    Examples:
+        >>> p1 = {(0,0): 1, (0,1): 1, (1,0): 2, (1,1): 2}  # Split by row
+        >>> p2 = {(0,0): 10, (0,1): 20, (1,0): 10, (1,1): 20}  # Split by col
+        >>> meet = meet_partitions(p1, p2)
+        >>> # Result: 4 classes, one per cell
+        >>> len(set(meet.values())) == 4
+        True
+    """
+    # Check domains match
+    if set(p1.keys()) != set(p2.keys()):
+        raise ValueError("Partitions must have same domain")
+
+    # Build meet by pairing classes
+    meet_signatures: Dict[Tuple[int, int], int] = {}
+    meet_partition: Partition = {}
+    next_class_id = 0
+
+    for pos in sorted(p1.keys()):
+        signature = (p1[pos], p2[pos])
+
+        if signature not in meet_signatures:
+            meet_signatures[signature] = next_class_id
+            next_class_id += 1
+
+        meet_partition[pos] = meet_signatures[signature]
+
+    return meet_partition
+
+
+def compute_KG_trains(
+    trains: List[Tuple[Grid, Grid]],
+    opts: Dict[str, bool],
+    wl_depth: int,
+    phases: Tuple[Optional[int], Optional[int], Optional[int]]
+) -> Tuple[List[Partition], int]:
+    """
+    Compute K_𝒢 (present congruence) on training inputs only.
+
+    Per WO-MK-05.4: "K_𝒢(X): present congruence of X under free moves 𝒢
+    (coarsest input-only WL fixed point)."
+
+    This is the "input structure quotient" - positions with same role
+    across all training inputs get same class.
+
+    Args:
+        trains: Training pairs (already canonicalized)
+        opts: Present options (E8, CBC1, etc.)
+        wl_depth: WL depth (1 or 2)
+        phases: Phase parameters
+
+    Returns:
+        (List of partitions, one per train input, WL iteration count)
+
+    Examples:
+        >>> # Two grids with identical structure
+        >>> x1 = Grid([[1, 2], [3, 4]])
+        >>> x2 = Grid([[5, 6], [7, 8]])
+        >>> y1 = Grid([[0, 0], [0, 0]])
+        >>> y2 = Grid([[0, 0], [0, 0]])
+        >>> KG, _ = compute_KG_trains([(x1, y1), (x2, y2)], {}, 1, (None, None, None))
+        >>> # Same structure → aligned classes
+        >>> len(KG) == 2
+        True
+    """
+    # Build presents for training inputs
+    X_list = [X for X, Y in trains]
+    presents = [build_present(X, opts, phases) for X in X_list]
+
+    # Run WL on disjoint union to get K_𝒢
+    KG_partitions, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
+
+    return KG_partitions, wl_iter_count
+
+
+def compute_LabelMeet(trains: List[Tuple[Grid, Grid]]) -> List[Partition]:
+    """
+    Compute L = ⋀ ker(c_i) (label kernel meet).
+
+    Per WO-MK-05.4: "L = ⋀_i ker(c_i): 'label split' partition
+    (split WL blocks by label across all trains)."
+
+    This is the "label constant" partition: positions with same label
+    in Y must have same class.
+
+    Args:
+        trains: Training pairs on unified domain
+
+    Returns:
+        List of label partitions, one per training pair
+
+    Examples:
+        >>> x = Grid([[1, 2], [3, 4]])
+        >>> y = Grid([[0, 0], [1, 1]])  # Two labels
+        >>> L = compute_LabelMeet([(x, y)])
+        >>> # Two label classes
+        >>> len(set(L[0].values())) == 2
+        True
+    """
+    L_partitions = []
+    for X, Y in trains:
+        # Build label partition for this training pair
+        L_partitions.append(_build_label_partition(Y))
+
+    return L_partitions
+
+
+def invariant_interior(
+    trains: List[Tuple[Grid, Grid]],
+    L_partitions: List[Partition],
+    phases: Tuple[Optional[int], Optional[int], Optional[int]],
+    opts_base: Dict[str, bool]
+) -> Tuple[Optional[Tuple[List[Partition], Dict[str, bool], int, int]], Optional[Witness]]:
+    """
+    Compute Int^𝒢(L): the 𝒢-invariant interior of L.
+
+    Per WO-MK-05.4: "WL on present; split by labels; if unexpressible,
+    **one** lawful escalation (E8 or 2-WL); else return finite witness."
+
+    This tries to express the label split using only the present (input structure).
+    Uses escalation ladder: base → E8 → depth=2 → WITNESS.
+
+    Args:
+        trains: Training pairs
+        L_partitions: Label partitions (one per train)
+        phases: Phase parameters
+        opts_base: Base present options
+
+    Returns:
+        Success: ((E_int_partitions, opts_used, wl_depth_used, wl_iter_count), None)
+        Failure: (None, witness)
+
+    Examples:
+        >>> # Label split expressible by input structure
+        >>> x = Grid([[1, 1], [2, 2]])
+        >>> y = Grid([[0, 0], [1, 1]])
+        >>> L = compute_LabelMeet([(x, y)])
+        >>> result, witness = invariant_interior([(x, y)], L, (None,None,None), {})
+        >>> witness is None  # Should succeed
+        True
+    """
+    # Try escalation ladder
+    for wl_depth, opts in _escalation_ladder():
+        # Compute K_𝒢 with current escalation
+        KG_partitions, wl_iter_count = compute_KG_trains(trains, opts, wl_depth, phases)
+
+        # Check if K_𝒢 refines L (i.e., K_𝒢 can express the label split)
+        all_refine = True
+        for train_idx, (X, Y) in enumerate(trains):
+            KG_psi = KG_partitions[train_idx]
+            L_psi = L_partitions[train_idx]
+
+            if not is_refinement(KG_psi, L_psi):
+                # K_𝒢 doesn't refine L at this escalation level
+                all_refine = False
+                break
+
+        if all_refine:
+            # Success! K_𝒢 refines L, so K_𝒢 is the interior
+            return ((KG_partitions, opts, wl_depth, wl_iter_count), None)
+
+    # All escalations failed - return witness
+    # Find a violation for witness
+    witness = {
+        'type': 'label_split_unexpressible',
+        'reason': 'Exhausted escalation ladder (base → E8 → depth=2)',
+        'note': 'Present cannot express label split even with all escalations'
+    }
+
+    return (None, witness)
+
+
 def _has_shape_change(trains: List[Tuple[Grid, Grid]]) -> bool:
     """Check if any training pair has different X and Y shapes."""
     for X, Y in trains:
@@ -251,7 +441,7 @@ def compile_CPRQ(
         if domain_mode == "bands":
             scale_or_none = (target_row_bands, target_col_bands, target_H, target_W)
 
-        # Try compilation on target space with escalation ladder
+        # Try compilation on target space with escalation ladder (OLD CODE PATH - TEMPORARY)
         for wl_depth, opts in _escalation_ladder():
             result, witness = _try_compile_shape_change(
                 trains, wl_depth, opts, target_row_bands, target_col_bands, target_H, target_W,
@@ -264,7 +454,7 @@ def compile_CPRQ(
         return (None, witness)
 
     # In-place path: X and Y have same shape
-    # Try compilation with escalation ladder
+    # Try compilation with escalation ladder (OLD CODE PATH - TEMPORARY)
     for wl_depth, opts in _escalation_ladder():
         result, witness = _try_compile(trains, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases)
         if result is not None:
@@ -961,6 +1151,9 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
     # Build presents on appropriate domain based on domain_mode
     # CRITICAL: Must use union-WL for alignment
     # Note: trains are already canonicalized in compile_CPRQ
+    # Track which grid Psi_test will be built from (for correct predict dimensions)
+    test_grid_for_wl = X_test_canonical  # Default
+
     if domain_mode == "identity":
         # Same-shape: build presents directly on inputs
         train_inputs = [X for X, Y in trains]
@@ -979,6 +1172,7 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
             # Replicate all inputs by factor k
             train_inputs_replicated = [_replicate_uniform(X, k) for X, Y in trains]
             test_replicated = _replicate_uniform(X_test_canonical, k)
+            test_grid_for_wl = test_replicated  # Track replicated grid
             all_inputs = train_inputs_replicated + [test_replicated]
             all_presents = [build_present(X_rep, options_used, phases) for X_rep in all_inputs]
 
@@ -1047,8 +1241,9 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
 
     # Predict using rebuilt rho (may raise ValueError for unseen classes)
     # This generates Y in canonical orientation
+    # IMPORTANT: Must use the same grid that Psi_test was built from (test_grid_for_wl)
     try:
-        Y_pred_canonical = _predict_with_rho(X_test_canonical, Psi_test, rho_new)
+        Y_pred_canonical = _predict_with_rho(test_grid_for_wl, Psi_test, rho_new)
     except ValueError as e:
         # present_gap_unseen_class witness
         # Per WO-MK-05.3: "emit a predict-time witness of type present_gap_unseen_class"

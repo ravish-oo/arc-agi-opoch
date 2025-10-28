@@ -228,9 +228,10 @@ def _grid_to_canonical_string(g: Grid) -> str:
 
 
 def rot90(g: Grid) -> Grid:
-    """Rotate 90° clockwise: new[c][H-1-r] = old[r][c]"""
+    """Rotate 90° clockwise: new[r][c] = old[H-1-c][r]. Result is W×H."""
     H, W = g.H, g.W
-    data = [[g[H - 1 - c][r] for c in range(W)] for r in range(W)]
+    # After rotation: W rows, H columns
+    data = [[g[H - 1 - c][r] for c in range(H)] for r in range(W)]
     return Grid(data)
 
 
@@ -242,9 +243,10 @@ def rot180(g: Grid) -> Grid:
 
 
 def rot270(g: Grid) -> Grid:
-    """Rotate 270° clockwise (90° counter-clockwise): new[W-1-c][r] = old[r][c]"""
+    """Rotate 270° clockwise (90° counter-clockwise): new[r][c] = old[c][W-1-r]. Result is W×H."""
     H, W = g.H, g.W
-    data = [[g[c][W - 1 - r] for c in range(W)] for r in range(W)]
+    # After rotation: W rows, H columns
+    data = [[g[c][W - 1 - r] for c in range(H)] for r in range(W)]
     return Grid(data)
 
 
@@ -281,9 +283,10 @@ def flip_d2(g: Grid) -> Grid:
 
 
 def transpose(g: Grid) -> Grid:
-    """Transpose: new[c][r] = old[r][c]"""
+    """Transpose: new[r][c] = old[c][r]. Result is W×H."""
     H, W = g.H, g.W
-    data = [[g[c][r] for c in range(W)] for r in range(H)]
+    # After transpose: W rows, H columns
+    data = [[g[c][r] for c in range(H)] for r in range(W)]
     return Grid(data)
 
 
@@ -366,6 +369,10 @@ def pi_canon(X: Grid) -> tuple[Grid, str, str]:
     Tries all D8 transforms (8 dihedral symmetries) plus transpose (if square).
     Returns the transform that produces the lexicographically smallest
     row-major string representation.
+
+    Properties:
+        - Idempotent: pi_canon(pi_canon(X)[0])[0] == pi_canon(X)[0]
+        - Deterministic: Same input always produces same canonical form
 
     Args:
         X: Input grid

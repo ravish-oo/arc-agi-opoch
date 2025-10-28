@@ -213,3 +213,8 @@ FINDINGS.md
 MK05_FIX_SUMMARY.md
 runs/
 debug*
+test_10_results.txt
+test_*/*
+test_results.txt
+test_results_golden.txt
+test_results_golden_fixed.txt
