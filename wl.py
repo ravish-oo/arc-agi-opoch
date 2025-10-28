@@ -31,7 +31,7 @@ def wl_disjoint_union(
     presents: List[Present],
     depth: int = 1,
     debug_positions: List[GlobalPosition] = None
-) -> List[Partition]:
+) -> Tuple[List[Partition], int]:
     """
     Run WL on disjoint union of all grids.
 
@@ -45,7 +45,7 @@ def wl_disjoint_union(
         debug_positions: Optional list of global positions to trace
 
     Returns:
-        List of partitions, one per grid, with aligned role IDs
+        (List of partitions, one per grid, with aligned role IDs, iteration count)
 
     Examples:
         >>> # Two grids with similar structure get aligned IDs
@@ -53,12 +53,12 @@ def wl_disjoint_union(
         >>> g2 = Grid([[5, 6], [7, 8]])
         >>> p1 = build_present(g1, {})
         >>> p2 = build_present(g2, {})
-        >>> parts = wl_disjoint_union([p1, p2], depth=1)
+        >>> parts, iter_count = wl_disjoint_union([p1, p2], depth=1)
         >>> len(parts) == 2
         True
     """
     if not presents:
-        return []
+        return [], 0
 
     if depth == 2:
         # 2-WL: refine on pairs instead of nodes
@@ -73,7 +73,7 @@ def wl_disjoint_union(
     adjacency_edges, equivalence_classes = _build_relation_data(presents)
 
     # Iterate WL refinement to fixed point
-    coloring = _refine_to_fixed_point(
+    coloring, iter_count = _refine_to_fixed_point(
         coloring,
         adjacency_edges,
         equivalence_classes,
@@ -83,7 +83,7 @@ def wl_disjoint_union(
     # Split back into per-grid partitions
     partitions = _split_into_grids(coloring, presents)
 
-    return partitions
+    return partitions, iter_count
 
 
 def _build_initial_coloring(presents: List[Present]) -> Dict[GlobalPosition, int]:
@@ -262,7 +262,7 @@ def _refine_to_fixed_point(
     equivalence_classes: Dict[str, Dict[GlobalPosition, List[GlobalPosition]]],
     max_iters: int = 50,
     debug_positions: List[GlobalPosition] = None
-) -> Dict[GlobalPosition, int]:
+) -> Tuple[Dict[GlobalPosition, int], int]:
     """
     Refine coloring using WL until fixed point.
 
@@ -281,7 +281,7 @@ def _refine_to_fixed_point(
         debug_positions: Optional list of positions to trace
 
     Returns:
-        Final coloring after fixed point
+        (Final coloring after fixed point, iteration count)
     """
     # Build adjacency neighbor lists for E4/E8
     adjacency_neighbors: Dict[str, Dict[GlobalPosition, List[GlobalPosition]]] = {}
@@ -311,7 +311,9 @@ def _refine_to_fixed_point(
         print()
 
     # Iterate refinement
+    final_iteration = 0
     for iteration in range(max_iters):
+        final_iteration = iteration
         new_coloring: Dict[GlobalPosition, int] = {}
         color_signatures: Dict[Any, List[GlobalPosition]] = {}
 
@@ -391,7 +393,7 @@ def _refine_to_fixed_point(
 
         coloring = new_coloring
 
-    return coloring
+    return coloring, final_iteration
 
 
 def _split_into_grids(
@@ -433,7 +435,7 @@ def _split_into_grids(
 def _wl_2_disjoint_union(
     presents: List[Present],
     debug_positions: List[GlobalPosition] = None
-) -> List[Partition]:
+) -> Tuple[List[Partition], int]:
     """
     Run 2-WL on disjoint union.
 
@@ -450,10 +452,10 @@ def _wl_2_disjoint_union(
         debug_positions: Optional debug positions
 
     Returns:
-        List of partitions with 2-WL refined colors
+        (List of partitions with 2-WL refined colors, iteration count)
     """
     if not presents:
-        return []
+        return [], 0
 
     # Build 1-WL initial coloring for nodes
     node_coloring = _build_initial_coloring(presents)
@@ -473,7 +475,9 @@ def _wl_2_disjoint_union(
                 pair_coloring[(u, v)] = pair_color
 
     # Refine pairs to fixed point
+    final_iteration = 0
     for iteration in range(50):
+        final_iteration = iteration
         new_pair_coloring = {}
         changed = False
 
@@ -526,7 +530,7 @@ def _wl_2_disjoint_union(
     # Split back into per-grid partitions
     partitions = _split_into_grids(final_node_coloring, presents)
 
-    return partitions
+    return partitions, final_iteration
 
 
 def get_role_count(partition: Partition) -> int:

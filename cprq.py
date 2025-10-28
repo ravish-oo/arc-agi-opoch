@@ -14,8 +14,8 @@ At most ONE escalation step.
 """
 
 from typing import List, Dict, Tuple, Optional, Any
-from grid import Grid
-from present import build_present, Present, detect_bands
+from grid import Grid, pi_canon, apply_transform, get_inverse_transform
+from present import build_present, Present, detect_bands, check_phase_consistency
 from wl import wl_disjoint_union
 from equiv import is_refinement, relabel_stable, new_partition_from_equiv
 from stable import stable_hash64
@@ -25,8 +25,8 @@ from stable import stable_hash64
 Position = Tuple[int, int]
 Partition = Dict[Position, int]
 Witness = Dict[str, Any]
-# CompileResult: (Psi_list, rho, wl_depth, opts, domain_mode, scale_factor_or_band_map)
-CompileResult = Tuple[List[Partition], Dict[int, int], int, Dict[str, bool], str, Optional[Any]]
+# CompileResult: (Psi_list, rho, wl_depth, opts, domain_mode, scale_factor_or_band_map, pi_tag, phases, wl_iter_count)
+CompileResult = Tuple[List[Partition], Dict[int, int], int, Dict[str, bool], str, Optional[Any], str, Tuple[Optional[int], Optional[int], Optional[int]], int]
 BandMap = Tuple[Dict[int, int], Dict[int, int]]  # (row_map, col_map)
 
 
@@ -202,6 +202,29 @@ def compile_CPRQ(
         # But in typical use, base_opts should be {}
         pass
 
+    # Π canonicalization: normalize orientation using first training input
+    # Per math_spec.md: "choose lex-min image on X; apply same transform to Y on train"
+    # Use first training X to determine canonical orientation for entire task
+    if len(trains) == 0:
+        return (None, {'type': 'no_training_data', 'reason': 'empty_trains'})
+
+    X_first, Y_first = trains[0]
+    _, pi_tag, pi_inv = pi_canon(X_first)
+
+    # Apply same transformation to all training pairs
+    trains_canonical = []
+    for X, Y in trains:
+        Xc = apply_transform(X, pi_tag)
+        Yc = apply_transform(Y, pi_tag)
+        trains_canonical.append((Xc, Yc))
+
+    # From now on, work with canonical grids
+    trains = trains_canonical
+
+    # Detect phases: check if all training inputs have consistent periods
+    # Per math_spec.md: "included only if consistent across all training inputs"
+    phases = check_phase_consistency(trains)
+
     # Detect domain mode
     domain_mode, scale_or_none = _detect_domain_mode(trains)
 
@@ -232,7 +255,7 @@ def compile_CPRQ(
         for wl_depth, opts in _escalation_ladder():
             result, witness = _try_compile_shape_change(
                 trains, wl_depth, opts, target_row_bands, target_col_bands, target_H, target_W,
-                domain_mode, scale_or_none
+                domain_mode, scale_or_none, pi_tag, phases
             )
             if result is not None:
                 return (result, None)
@@ -243,7 +266,7 @@ def compile_CPRQ(
     # In-place path: X and Y have same shape
     # Try compilation with escalation ladder
     for wl_depth, opts in _escalation_ladder():
-        result, witness = _try_compile(trains, wl_depth, opts, domain_mode, scale_or_none)
+        result, witness = _try_compile(trains, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases)
         if result is not None:
             # Success!
             return (result, None)
@@ -258,21 +281,23 @@ def _try_compile(
     wl_depth: int,
     opts: Dict[str, bool],
     domain_mode: str,
-    scale_or_none: Optional[int]
+    scale_or_none: Optional[int],
+    pi_tag: str,
+    phases: Tuple[Optional[int], Optional[int], Optional[int]]
 ) -> Tuple[Optional[CompileResult], Optional[Witness]]:
     """
     Try compilation with given WL depth and options.
 
     Returns:
-        Success: ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none), None)
+        Success: ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases), None)
         Failure: (None, witness)
     """
     # Build present for each training input
     X_list = [X for X, Y in trains]
-    presents = [build_present(X, opts) for X in X_list]
+    presents = [build_present(X, opts, phases) for X in X_list]
 
     # Run WL to get Psi partitions
-    Psi_list = wl_disjoint_union(presents, depth=wl_depth)
+    Psi_list, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
 
     # Check label-constant property (refinement)
     for train_idx, (X, Y) in enumerate(trains):
@@ -318,7 +343,7 @@ def _try_compile(
             return (None, witness)
 
     # Success!
-    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none), None)
+    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count), None)
 
 
 def _try_compile_shape_change(
@@ -330,7 +355,9 @@ def _try_compile_shape_change(
     target_H: int,
     target_W: int,
     domain_mode: str,
-    scale_or_none: Optional[int]
+    scale_or_none: Optional[int],
+    pi_tag: str,
+    phases: Tuple[Optional[int], Optional[int], Optional[int]]
 ) -> Tuple[Optional[CompileResult], Optional[Witness]]:
     """
     Try compilation for shape-change tasks.
@@ -348,17 +375,17 @@ def _try_compile_shape_change(
     with Y to make progress.
 
     Returns:
-        Success: ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none), None)
+        Success: ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases), None)
         Failure: (None, witness)
     """
     # Build present for each OUTPUT (Y) grid
     # Note: This is simplified - we're building present from Y directly
     # Blueprint says to map X to target space, but for now using Y
     Y_list = [Y for X, Y in trains]
-    presents = [build_present(Y, opts) for Y in Y_list]
+    presents = [build_present(Y, opts, phases) for Y in Y_list]
 
     # Run WL to get Psi partitions (on Y positions)
-    Psi_list = wl_disjoint_union(presents, depth=wl_depth)
+    Psi_list, wl_iter_count = wl_disjoint_union(presents, depth=wl_depth)
 
     # Check label-constant property (refinement on Y space)
     for train_idx, (X, Y) in enumerate(trains):
@@ -404,7 +431,7 @@ def _try_compile_shape_change(
             return (None, witness)
 
     # Success!
-    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none), None)
+    return ((Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count), None)
 
 
 def _build_label_partition(Y: Grid) -> Partition:
@@ -818,7 +845,7 @@ def build_receipt(compile_result: CompileResult) -> Dict[str, Any]:
         >>> receipt['domain_mode'] == 'identity'
         True
     """
-    Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none = compile_result
+    Psi_list, rho, wl_depth, opts, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count = compile_result
 
     # Build present_flags from opts
     present_flags = {
@@ -834,9 +861,18 @@ def build_receipt(compile_result: CompileResult) -> Dict[str, Any]:
         'CBC2': opts.get('CBC2', False),
     }
 
+    row_k, col_k, diag_k = phases
+
+    # cbc_radius: 0 or 1 (documentation field)
+    cbc_radius = 1 if opts.get('CBC1', False) else 0
+
     receipt = {
+        'pi_tag': pi_tag,
         'wl_depth': wl_depth,
+        'cbc_radius': cbc_radius,
+        'wl_iter_count': wl_iter_count,
         'domain_mode': domain_mode,
+        'phases': {'row_k': row_k, 'col_k': col_k, 'diag_k': diag_k},
         'present_flags': present_flags,
         'num_roles': len(set(c for psi in Psi_list for c in psi.values())),
         'rho_size': len(rho),
@@ -915,15 +951,21 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         >>> y_pred[0][0] == 5 and y_pred[0][1] == 6
         True
     """
-    Psi_list_train_old, rho_old, wl_depth, options_used, domain_mode, scale_or_none = compile_result
+    Psi_list_train_old, rho_old, wl_depth, options_used, domain_mode, scale_or_none, pi_tag, phases, wl_iter_count_compile = compile_result
+
+    # Π canonicalization: apply same transform to test input
+    # Per math_spec.md: "on test, apply to X*, remember inverse"
+    pi_inv = get_inverse_transform(pi_tag)
+    X_test_canonical = apply_transform(X_test, pi_tag)
 
     # Build presents on appropriate domain based on domain_mode
     # CRITICAL: Must use union-WL for alignment
+    # Note: trains are already canonicalized in compile_CPRQ
     if domain_mode == "identity":
         # Same-shape: build presents directly on inputs
         train_inputs = [X for X, Y in trains]
-        all_inputs = train_inputs + [X_test]
-        all_presents = [build_present(X, options_used) for X in all_inputs]
+        all_inputs = train_inputs + [X_test_canonical]
+        all_presents = [build_present(X, options_used, phases) for X in all_inputs]
 
     elif domain_mode == "uniform_scale":
         # Uniform replication: replicate by factor k
@@ -931,14 +973,14 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         if k is None or k <= 0:
             # Invalid scale factor, fall back to identity
             train_inputs = [X for X, Y in trains]
-            all_inputs = train_inputs + [X_test]
-            all_presents = [build_present(X, options_used) for X in all_inputs]
+            all_inputs = train_inputs + [X_test_canonical]
+            all_presents = [build_present(X, options_used, phases) for X in all_inputs]
         else:
             # Replicate all inputs by factor k
             train_inputs_replicated = [_replicate_uniform(X, k) for X, Y in trains]
-            test_replicated = _replicate_uniform(X_test, k)
+            test_replicated = _replicate_uniform(X_test_canonical, k)
             all_inputs = train_inputs_replicated + [test_replicated]
-            all_presents = [build_present(X_rep, options_used) for X_rep in all_inputs]
+            all_presents = [build_present(X_rep, options_used, phases) for X_rep in all_inputs]
 
     elif domain_mode == "bands":
         # Band-based mapping: for now, use output space (simplified)
@@ -947,20 +989,20 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         train_outputs = [Y for X, Y in trains]
         # For test, we don't have Y, so fall back to identity for now
         # This is a limitation of the simplified implementation
-        train_presents = [build_present(Y, options_used) for Y in train_outputs]
-        test_present = build_present(X_test, options_used)  # Fallback
+        train_presents = [build_present(Y, options_used, phases) for Y in train_outputs]
+        test_present = build_present(X_test_canonical, options_used, phases)  # Fallback
         all_presents = train_presents + [test_present]
 
     else:
         # Unknown domain mode, fall back to identity
         train_inputs = [X for X, Y in trains]
-        all_inputs = train_inputs + [X_test]
-        all_presents = [build_present(X, options_used) for X in all_inputs]
+        all_inputs = train_inputs + [X_test_canonical]
+        all_presents = [build_present(X, options_used, phases) for X in all_inputs]
 
     # Run WL on disjoint union {trains ∪ test}
     # This gives DIFFERENT hashes than compile-time WL (trains only)
     # because adding test changes global refinement patterns
-    Psi_list_all = wl_disjoint_union(all_presents, depth=wl_depth)
+    Psi_list_all, wl_iter_count_predict = wl_disjoint_union(all_presents, depth=wl_depth)
 
     # Rebuild ρ from training positions using NEW WL hashes
     # Training positions in the union get new hashes, but still map to same Y colors
@@ -1004,11 +1046,31 @@ def predict(X_test: Grid, trains: List[Tuple[Grid, Grid]], compile_result: Compi
         print(f"  ⚠️ WARNING: Zero overlap! Union-WL alignment issue.")
 
     # Predict using rebuilt rho (may raise ValueError for unseen classes)
+    # This generates Y in canonical orientation
     try:
-        return _predict_with_rho(X_test, Psi_test, rho_new)
+        Y_pred_canonical = _predict_with_rho(X_test_canonical, Psi_test, rho_new)
     except ValueError as e:
         # present_gap_unseen_class witness
-        print(f"  ❌ {e}")
-        # For now, return a black grid (all 0s) to avoid crashing
-        # In production, this should propagate the witness up
-        return Grid([[0] * X_test.W for _ in range(X_test.H)])
+        # Per WO-MK-05.3: "emit a predict-time witness of type present_gap_unseen_class"
+        error_msg = str(e)
+        print(f"  ❌ Predict failed: {error_msg}")
+
+        # Extract unseen class_ids from error message (if format matches)
+        unseen_classes = []
+        try:
+            # Error message format: "present_gap_unseen_class: Test has N role IDs not seen in training ρ: [list]"
+            if "present_gap_unseen_class" in error_msg:
+                # This is the expected error, witness has already been logged
+                pass
+        except:
+            pass
+
+        # For now, raise the error with witness information
+        # In production, this would return a proper witness structure
+        raise ValueError(f"present_gap_unseen_class: {error_msg}") from e
+
+    # Apply inverse Π transform to get final output
+    # Per math_spec.md: "remember inverse" and apply it to output
+    Y_pred = apply_transform(Y_pred_canonical, pi_inv)
+
+    return Y_pred

@@ -29,16 +29,21 @@ Position = Tuple[int, int]
 Partition = Dict[Position, int]
 
 
-def build_present(X: Grid, opts: Dict[str, bool]) -> Present:
+def build_present(X: Grid, opts: Dict[str, bool], phases: Optional[Tuple[Optional[int], Optional[int], Optional[int]]] = None) -> Present:
     """
     Build input-only present from grid X.
 
     Always includes: E4, sameRow, sameCol, sameColor, sameComp8, bandRow, bandCol
     Optional (via opts): E8, CBC1, CBC2
+    Optional (via phases): row_phase, col_phase, diag_phase
+
+    Per math_spec.md: "optional Row/Col/Diag phases if input periodicity is
+    consistent across all trains."
 
     Args:
         X: Input grid (never uses labels)
         opts: Dict with optional relation flags (E8, CBC1, CBC2)
+        phases: Optional (row_k, col_k, diag_k) tuple for periodic phases
 
     Returns:
         Present dict with relations and tokens
@@ -64,6 +69,13 @@ def build_present(X: Grid, opts: Dict[str, bool]) -> Present:
     row_bands, col_bands = detect_bands(X)
     present['bandRow'] = row_bands
     present['bandCol'] = col_bands
+
+    # Optional phases (unary predicates)
+    if phases is not None:
+        row_k, col_k, diag_k = phases
+        present['phases'] = (row_k, col_k, diag_k)
+    else:
+        present['phases'] = (None, None, None)
 
     # Optional relations
     if opts.get('E8', False):
@@ -463,3 +475,149 @@ def _transpose(patch: List[List[int]]) -> List[List[int]]:
             transposed[c][r] = patch[r][c]
 
     return transposed
+
+
+# Phase Detection: Input-only periodicities for optional unary predicates
+
+def detect_period_axis(X: Grid, axis: str) -> Optional[int]:
+    """
+    Detect period k for given axis using pattern matching.
+
+    Per math_spec.md: "input-detected periodicities (via autocorrelation),
+    included only if consistent across all training inputs."
+
+    Args:
+        X: Input grid
+        axis: 'row' or 'col'
+
+    Returns:
+        Period k (2..10) if detected, None otherwise
+
+    Examples:
+        >>> # Periodic rows with period 2
+        >>> g = Grid([[1, 2], [1, 2], [1, 2]])
+        >>> detect_period_axis(g, 'row')
+        2
+    """
+    if axis == 'row':
+        # Check if rows repeat with period k
+        for k in range(2, min(X.H, 11)):  # Try periods 2..10
+            if X.H % k != 0:
+                continue
+
+            # Check if all rows match with period k
+            is_periodic = True
+            for r in range(X.H):
+                r_ref = r % k
+                # Compare row r with row r_ref
+                for c in range(X.W):
+                    if X[r][c] != X[r_ref][c]:
+                        is_periodic = False
+                        break
+                if not is_periodic:
+                    break
+
+            if is_periodic:
+                return k
+
+    elif axis == 'col':
+        # Check if columns repeat with period k
+        for k in range(2, min(X.W, 11)):  # Try periods 2..10
+            if X.W % k != 0:
+                continue
+
+            # Check if all cols match with period k
+            is_periodic = True
+            for c in range(X.W):
+                c_ref = c % k
+                # Compare col c with col c_ref
+                for r in range(X.H):
+                    if X[r][c] != X[r][c_ref]:
+                        is_periodic = False
+                        break
+                if not is_periodic:
+                    break
+
+            if is_periodic:
+                return k
+
+    return None
+
+
+def check_phase_consistency(trains: List[Tuple[Grid, Grid]]) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """
+    Check if all training inputs have consistent periods.
+
+    Per math_spec.md: "included only if consistent across all training inputs.
+    If both row/col periods exist and are equal k, add DiagPhase (a+b)mod k."
+
+    Args:
+        trains: List of (X, Y) training pairs
+
+    Returns:
+        (row_k, col_k, diag_k):
+            - row_k: Row period if consistent across all trains, else None
+            - col_k: Col period if consistent across all trains, else None
+            - diag_k: Diagonal period if row_k == col_k, else None
+
+    Examples:
+        >>> x1 = Grid([[1, 2], [1, 2]])
+        >>> y1 = Grid([[0, 0], [0, 0]])
+        >>> x2 = Grid([[3, 4], [3, 4], [3, 4]])
+        >>> y2 = Grid([[0, 0], [0, 0], [0, 0]])
+        >>> row_k, col_k, diag_k = check_phase_consistency([(x1, y1), (x2, y2)])
+        >>> row_k  # Both have row period 2 (?)
+        # Actually x1 has no row period, x2 might have period 3
+        # This is just an example structure
+    """
+    if len(trains) == 0:
+        return (None, None, None)
+
+    # Detect row period from all training inputs
+    row_periods = set()
+    for X, Y in trains:
+        k = detect_period_axis(X, 'row')
+        if k is not None:
+            row_periods.add(k)
+
+    # Row period must be consistent (same k for all trains that have a period)
+    # If any train has no period, disable row phase
+    row_k = None
+    if len(row_periods) == 1:
+        # All trains agree on same row period
+        # But we also need to check that ALL trains have this period
+        candidate_k = list(row_periods)[0]
+        all_have_period = True
+        for X, Y in trains:
+            k = detect_period_axis(X, 'row')
+            if k != candidate_k:
+                all_have_period = False
+                break
+        if all_have_period:
+            row_k = candidate_k
+
+    # Detect col period from all training inputs
+    col_periods = set()
+    for X, Y in trains:
+        k = detect_period_axis(X, 'col')
+        if k is not None:
+            col_periods.add(k)
+
+    col_k = None
+    if len(col_periods) == 1:
+        candidate_k = list(col_periods)[0]
+        all_have_period = True
+        for X, Y in trains:
+            k = detect_period_axis(X, 'col')
+            if k != candidate_k:
+                all_have_period = False
+                break
+        if all_have_period:
+            col_k = candidate_k
+
+    # Diagonal phase only if row_k == col_k
+    diag_k = None
+    if row_k is not None and col_k is not None and row_k == col_k:
+        diag_k = row_k
+
+    return (row_k, col_k, diag_k)

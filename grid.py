@@ -204,3 +204,214 @@ class GridRow:
     def __len__(self) -> int:
         """Length of row (width of grid)."""
         return self._grid.W
+
+
+# Π Canonicalization: D8 + Transpose transforms for input-only orientation normalization
+
+def _grid_to_canonical_string(g: Grid) -> str:
+    """
+    Convert grid to canonical string for lexicographic comparison.
+
+    Row-major order: concatenate all rows into a single string.
+
+    Args:
+        g: Input grid
+
+    Returns:
+        String representation for lex-min comparison
+    """
+    chars = []
+    for r in range(g.H):
+        for c in range(g.W):
+            chars.append(str(g[r][c]))
+    return ''.join(chars)
+
+
+def rot90(g: Grid) -> Grid:
+    """Rotate 90° clockwise: new[c][H-1-r] = old[r][c]"""
+    H, W = g.H, g.W
+    data = [[g[H - 1 - c][r] for c in range(W)] for r in range(W)]
+    return Grid(data)
+
+
+def rot180(g: Grid) -> Grid:
+    """Rotate 180°: new[H-1-r][W-1-c] = old[r][c]"""
+    H, W = g.H, g.W
+    data = [[g[H - 1 - r][W - 1 - c] for c in range(W)] for r in range(H)]
+    return Grid(data)
+
+
+def rot270(g: Grid) -> Grid:
+    """Rotate 270° clockwise (90° counter-clockwise): new[W-1-c][r] = old[r][c]"""
+    H, W = g.H, g.W
+    data = [[g[c][W - 1 - r] for c in range(W)] for r in range(W)]
+    return Grid(data)
+
+
+def flip_h(g: Grid) -> Grid:
+    """Horizontal flip: new[r][W-1-c] = old[r][c]"""
+    H, W = g.H, g.W
+    data = [[g[r][W - 1 - c] for c in range(W)] for r in range(H)]
+    return Grid(data)
+
+
+def flip_v(g: Grid) -> Grid:
+    """Vertical flip: new[H-1-r][c] = old[r][c]"""
+    H, W = g.H, g.W
+    data = [[g[H - 1 - r][c] for c in range(W)] for r in range(H)]
+    return Grid(data)
+
+
+def flip_d1(g: Grid) -> Grid:
+    """Diagonal flip (main diagonal): new[c][r] = old[r][c] (transpose)"""
+    if g.H != g.W:
+        raise ValueError(f"flip_d1 requires square grid, got {g.H}×{g.W}")
+    N = g.H
+    data = [[g[c][r] for c in range(N)] for r in range(N)]
+    return Grid(data)
+
+
+def flip_d2(g: Grid) -> Grid:
+    """Diagonal flip (anti-diagonal): new[W-1-c][H-1-r] = old[r][c]"""
+    if g.H != g.W:
+        raise ValueError(f"flip_d2 requires square grid, got {g.H}×{g.W}")
+    N = g.H
+    data = [[g[N - 1 - c][N - 1 - r] for c in range(N)] for r in range(N)]
+    return Grid(data)
+
+
+def transpose(g: Grid) -> Grid:
+    """Transpose: new[c][r] = old[r][c]"""
+    H, W = g.H, g.W
+    data = [[g[c][r] for c in range(W)] for r in range(H)]
+    return Grid(data)
+
+
+# Inverse transform mappings
+_INVERSE_TRANSFORM = {
+    'identity': 'identity',
+    'rot90': 'rot270',
+    'rot180': 'rot180',
+    'rot270': 'rot90',
+    'flip_h': 'flip_h',
+    'flip_v': 'flip_v',
+    'flip_d1': 'flip_d1',
+    'flip_d2': 'flip_d2',
+    'transpose': 'transpose',
+}
+
+
+def get_inverse_transform(tag: str) -> str:
+    """
+    Get the inverse of a transform tag.
+
+    Args:
+        tag: Transform name
+
+    Returns:
+        Inverse transform name
+
+    Examples:
+        >>> get_inverse_transform('rot90')
+        'rot270'
+        >>> get_inverse_transform('flip_h')
+        'flip_h'
+    """
+    if tag not in _INVERSE_TRANSFORM:
+        raise ValueError(f"Unknown transform tag: {tag}")
+    return _INVERSE_TRANSFORM[tag]
+
+
+def apply_transform(g: Grid, tag: str) -> Grid:
+    """
+    Apply a transform by tag name.
+
+    Args:
+        g: Input grid
+        tag: Transform name (e.g., 'rot90', 'flip_h', 'identity')
+
+    Returns:
+        Transformed grid
+    """
+    if tag == 'identity':
+        return g
+    elif tag == 'rot90':
+        return rot90(g)
+    elif tag == 'rot180':
+        return rot180(g)
+    elif tag == 'rot270':
+        return rot270(g)
+    elif tag == 'flip_h':
+        return flip_h(g)
+    elif tag == 'flip_v':
+        return flip_v(g)
+    elif tag == 'flip_d1':
+        return flip_d1(g)
+    elif tag == 'flip_d2':
+        return flip_d2(g)
+    elif tag == 'transpose':
+        return transpose(g)
+    else:
+        raise ValueError(f"Unknown transform tag: {tag}")
+
+
+def pi_canon(X: Grid) -> tuple[Grid, str, str]:
+    """
+    Π canonicalization: choose lexicographically smallest orientation.
+
+    Per math_spec.md: "Orientation (Π): dihedral (rot/flip) + transpose
+    (only if shape-compatible); choose lex-min image on X; apply same
+    transform to Y on train; on test, apply to X*, remember inverse."
+
+    Tries all D8 transforms (8 dihedral symmetries) plus transpose (if square).
+    Returns the transform that produces the lexicographically smallest
+    row-major string representation.
+
+    Args:
+        X: Input grid
+
+    Returns:
+        (X_canonical, pi_tag, pi_inverse):
+            - X_canonical: Transformed grid (lex-min)
+            - pi_tag: Name of transform applied
+            - pi_inverse: Name of inverse transform
+
+    Examples:
+        >>> g = Grid([[3, 1], [2, 0]])
+        >>> gc, tag, inv = pi_canon(g)
+        >>> # gc is lexicographically smallest orientation
+        >>> tag in ['identity', 'rot90', 'rot180', 'rot270', 'flip_h', 'flip_v', 'flip_d1', 'flip_d2', 'transpose']
+        True
+    """
+    # D8 transforms (always applicable)
+    transforms = [
+        ('identity', X),
+        ('rot90', rot90(X)),
+        ('rot180', rot180(X)),
+        ('rot270', rot270(X)),
+        ('flip_h', flip_h(X)),
+        ('flip_v', flip_v(X)),
+    ]
+
+    # Square-only transforms
+    if X.H == X.W:
+        transforms.append(('flip_d1', flip_d1(X)))
+        transforms.append(('flip_d2', flip_d2(X)))
+        transforms.append(('transpose', transpose(X)))
+
+    # Find lex-min
+    best_tag = 'identity'
+    best_grid = X
+    best_str = _grid_to_canonical_string(X)
+
+    for tag, grid in transforms:
+        grid_str = _grid_to_canonical_string(grid)
+        if grid_str < best_str:
+            best_str = grid_str
+            best_grid = grid
+            best_tag = tag
+
+    # Look up inverse
+    inv_tag = _INVERSE_TRANSFORM[best_tag]
+
+    return (best_grid, best_tag, inv_tag)
