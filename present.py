@@ -230,8 +230,26 @@ def detect_bands(X: Grid) -> Tuple[Partition, Partition]:
                     # No change: same band
                     col_equiv_pairs.append(((r, c), (r, c + 1)))
 
-    row_bands = new_partition_from_equiv(row_equiv_pairs)
-    col_bands = new_partition_from_equiv(col_equiv_pairs)
+    # Build partitions, ensuring all positions are included
+    row_bands = new_partition_from_equiv(row_equiv_pairs) if row_equiv_pairs else {}
+    col_bands = new_partition_from_equiv(col_equiv_pairs) if col_equiv_pairs else {}
+
+    # For positions not in any equivalence pairs, add them as singletons
+    all_positions = list(X.positions())
+
+    # Row bands
+    next_row_id = max(row_bands.values()) + 1 if row_bands else 0
+    for pos in all_positions:
+        if pos not in row_bands:
+            row_bands[pos] = next_row_id
+            next_row_id += 1
+
+    # Col bands
+    next_col_id = max(col_bands.values()) + 1 if col_bands else 0
+    for pos in all_positions:
+        if pos not in col_bands:
+            col_bands[pos] = next_col_id
+            next_col_id += 1
 
     return relabel_stable(row_bands), relabel_stable(col_bands)
 

@@ -48,7 +48,7 @@ Each item: file, ceiling, contract, tests, reviewer gates.
 * Tests: CBC invariance under D8; bands determinism under color relabel; leak-lint pass
 * Gates: AST linter bans Y, Δ, raw indices, `%`, “phase,” “template,” “pattern”
 
-**MK-04 WL**
+**MK-04 WL** ✅ COMPLETE
 
 * Files: `wl.py`
 * Contract: `wl_disjoint_union(presents)->list[Partition]`
